@@ -1,0 +1,7 @@
+# GPU server only. User installs; Codex must not install or execute locally.
+-r requirements.txt
+vllm==0.10.2
+transformers>=4.55.2,<5
+# V0 FP32 attention uses XFormers. Match its wheel to the torch/CUDA selected
+# by vLLM 0.10.2; do not force the prior torch 2.13 / transformers 5 environment.
+xformers==0.0.32.post1; platform_system == 'Linux' and platform_machine == 'x86_64'

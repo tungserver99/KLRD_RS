@@ -1,0 +1,5 @@
+{
+  "scope": "Allow only the runner progress-display upgrade; preserve all original scientific and job identities",
+  "previous_runner_sha256": "f168289f7eb60e07f83f473bebb8832b226fd7566246050b6b8e4e3e5fa019ef",
+  "progress_runner_sha256": "541911b2e06e828d86b3df9b0e21615f55323cfd2ebb72e97e956491aab4fd80"
+}

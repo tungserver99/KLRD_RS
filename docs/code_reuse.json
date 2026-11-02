@@ -1,0 +1,42 @@
+{
+  "source": "User-owned historical KLRD project",
+  "runtime_reuse": [
+    {
+      "source": "KLRD/klrd/data.py",
+      "destination": "klrd_rs/data.py",
+      "functions": [
+        "prompt_ids",
+        "encode_response"
+      ],
+      "mode": "adapted"
+    },
+    {
+      "source": "KLRD/klrd/model.py",
+      "destination": "klrd_rs/model.py",
+      "functions": [
+        "final-norm pre-hook capture"
+      ],
+      "mode": "adapted"
+    },
+    {
+      "source": "KLRD/klrd/rotation.py",
+      "destination": "klrd_rs/math.py",
+      "functions": [
+        "paired-plane sin/cos rotation convention"
+      ],
+      "mode": "generalized to public m-dimensional rotation parameters"
+    }
+  ],
+  "source_hashes": {
+    "source_snapshot/data.py": "24ab4603b1c8200a5bd419eb08079965093571ca5450d73279edd8425de9527b",
+    "source_snapshot/model.py": "786dbb44f2f3aceeae9e2208ea0a3d7cc99ae159a3a25533bafa8d7ea8ba3aea",
+    "source_snapshot/rotation.py": "4819c1c95bf8b17b8bd93e799c1d99c804b1f70e7232a4cce152a6924cdbfbe1",
+    "source_snapshot/pipeline.py": "b044cef88b8f0e9daf984ded6c4c3913250e1eead4771b6c6d259f63e3f56502",
+    "source_snapshot/vllm_backend.py": "c256b3703e60cc2f768092a746167550edb7c833c1546c00c70365a445d6b67a",
+    "source_snapshot/followup.py": "cee2c5676fc474a52df6dd4bc6f058a1f932f5412206767291d25af18f9af100"
+  },
+  "sibling_imports": false,
+  "KSRF": "Inspected; cohort/sampling-specific code not copied",
+  "intended_source_project": "KLRD",
+  "user_source_clarification": "The initial KSRF path was a copied-path mistake; intended source is KLRD. All implemented reuse and historical inputs already originate from KLRD."
+}
