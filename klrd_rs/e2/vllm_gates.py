@@ -23,7 +23,10 @@ def runtime_configuration_valid(out):
     try:
         environment=read_json(Path(out)/'provenance/engine_manifest.json')
         expected=environment['readout_parameter_sha256']
-        return (environment['generation']['readout_hashes']==[expected]
+        from .vllm_runtime import runtime_identity
+        generation=environment['generation']
+        return (all(generation.get(k)==v for k,v in runtime_identity().items())
+            and environment['generation']['readout_hashes']==[expected]
             and environment['generation']['dtype']=='float32')
     except (OSError,ValueError,KeyError,TypeError):return False
 
@@ -80,7 +83,8 @@ def validate_vllm_sampler(sampler,requests,bank,cfg,out,*,enabled=False):
         return {'status':'NOT_RUN','blocking':False,'reason':'Optional numerical diagnostics disabled'}
     from .vllm_policy_gates import validate_vllm_sampler as validate
     try:
-        result=validate(sampler,requests,bank,cfg,out)
+        with sampler.diagnostic_mode():
+            result=validate(sampler,requests,bank,cfg,out)
     except NumericalToleranceExceeded as exc:
         result={'status':'NUMERICAL_DIAGNOSTIC_NOT_PASSED','blocking':False,'reason':str(exc)}
         write_json(out/'tests/optional_numerical_diagnostics.json',result)

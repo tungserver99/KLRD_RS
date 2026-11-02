@@ -1,4 +1,5 @@
 from dataclasses import dataclass,asdict
+from .vllm_runtime import runtime_identity
 
 
 @dataclass(frozen=True)
@@ -40,7 +41,7 @@ class E2Config:
         x=asdict(self)
         for k,v in x.items():
             if isinstance(v,tuple):x[k]=list(v)
-        x.update(engine='VLLM_EXACT_ROTATION_FP32',generation_backend='vllm',vllm_version='0.10.2',
+        x.update(engine='VLLM_EXACT_ROTATION_FP32',generation_backend='vllm',**runtime_identity(),
             numerical_validation_policy='DISABLED_OPTIONAL_NON_BLOCKING',
             generation_linear_accumulation='float32',verification_linear_accumulation='float64',
             weights_activations_KV_dtype='float32',readout_probability_KL_dtype='float32',

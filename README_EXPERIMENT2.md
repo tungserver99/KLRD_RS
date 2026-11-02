@@ -1,14 +1,36 @@
 # Experiment 2 — exact teacher free generation
 
-**Luồng hiện tại: custom vLLM 0.10.2, run_010; numerical diagnostics mặc định tắt.**
-Không chạy native calibration, numerical holdout hoặc HF parity trước generation.
-Numerical reports không còn là điều kiện để tổng hợp kết quả E2. Trường
-`sampler_valid` xác nhận frozen runtime configuration, không tuyên bố numerical PASS.
-Các mô tả parity/calibration cũ bên dưới và trong README numerical là lịch sử,
-không phải bước bắt buộc. Frozen artifacts, runtime errors và NaN/Inf vẫn báo lỗi.
-Đồng bộ `main_exp2.py` và toàn bộ `klrd_rs/e2/`; không chỉ copy launcher.
-Đồng bộ thêm `tools/check_vllm_exp2.py` nếu sử dụng công cụ diagnostic tùy chọn.
-Thay đổi này chỉ được rà source; không có test hoặc experiment local được chạy.
+**Runtime hiện tại: vLLM 0.32.0 / V1, FP32 / TRITON_ATTN; output `experiment2_rs/run_012/`.**
+
+Lệnh notebook giữ nguyên:
+
+```python
+!bash run_experiment2.sh
+```
+
+File `run_experiment2.sh` vẫn chỉ chứa `python main_exp2.py`. Chuẩn bị environment
+riêng trên GPU server bằng `requirements-vllm.txt`; Python >=3.11,<3.15 và
+Transformers >=5.16.1,<5.20.0. Khởi chạy notebook từ environment mới để `python`
+trong PATH trỏ đúng môi trường. Không nâng package trong environment đang chạy.
+Xem [hướng dẫn vLLM](README_VLLM_EXPERIMENT2.md) để cài đặt và kiểm tra tùy chọn.
+
+Generation yêu cầu CUDA Graph decode, cập nhật rotation buffers tại chỗ giữa
+các batch cố định key. Optional probes dùng engine eager riêng; worker cũ phải
+thoát trước khi engine khác khởi tạo. Finite-logits vẫn tích lũy trên GPU và đọc
+một lần/batch. Prefix caching tắt; production bật chunked prefill. Các thiết lập
+engine mới nằm trong runtime identity, nên không resume lẫn kết quả 0.10.2.
+Run_001 đến run_011 được bảo vệ; không sửa hash/checkpoint hoặc nhập observations
+cũ vào run_012. Prompt/cohort/key/seed/λ/sampling/EOS và protocol E2 giữ nguyên.
+
+Verifier giữ phần tối ưu đã có: chunk execution tối thiểu64 token, FP64 Linear
+và tổng trên GPU, chuyển về CPU một lần/batch; NumPy key projection, spherical
+verifier và logic KL giữ nguyên. `score_chunk=4` vẫn nằm trong frozen protocol.
+Numerical diagnostics mặc định tắt và không blocking; artifact/runtime/NaN/Inf
+vẫn báo lỗi. `sampler_valid` xác nhận runtime configuration, không tuyên bố parity.
+
+**Trạng thái: đã sửa source, chưa chạy test/inference/benchmark trên GPU server.**
+Không có cam kết speedup đã đo. Đồng bộ `main_exp2.py`, toàn bộ `klrd_rs/e2/`
+(kể cả `vllm_runtime.py`), requirements, READMEs và tool diagnostic cùng phiên bản.
 
 Chạy từ thư mục dự án với Python/CUDA environment của bạn:
 
@@ -19,16 +41,13 @@ bash run_experiment2.sh
 File `.sh` chỉ chứa `python main_exp2.py`, không cài env, không kích hoạt env,
 không chứa đường dẫn Python hoặc yêu cầu file config thủ công.
 
-Tiến độ/ETA hiện trực tiếp khi chạy file sh, không cần monitor riêng. Cập nhật
-`klrd_rs/e2/runner.py` và file đi kèm `runner_progress_resume.json` cùng lúc;
-file JSON là receipt hash cố định cho đúng lần nâng cấp logging này, không phải
-config cần chỉnh. Dừng tiến trình cũ trước khi cập nhật, rồi chạy lại cùng sh,
-giữ nguyên `experiment2_rs/run_010`. Batch đã commit được dùng lại; phần đang
-chạy nhưng chưa commit có thể phải chạy lại. Receipt chỉ cho phép thay runner
-đúng hai hash đã ghi, mọi source/config/runtime/artifact khác vẫn phải khớp.
-Identity gốc không bị thay; `provenance/progress_resume_upgrade.json` ghi việc
-nâng cấp logging. Không chỉnh/xóa identity hay checkpoint để ép resume.
-
+Tiến độ/ETA hiện trực tiếp khi chạy file sh, không cần monitor riêng. Chạy lại
+cùng lệnh để resume run_012 khi code/runtime/config/artifact không thay đổi.
+Receipt `runner_progress_resume.json` chỉ dành cho lần sửa logging lịch sử của
+run_010, không cho phép resume run_010/011 với migration này. Không chỉnh/xóa
+identity hay checkpoint để ép resume và không dừng lượt chạy cũ để nâng package.
+Nếu dùng monitor read-only riêng cho lượt mới:
+`python tools/watch_exp2_progress.py --output experiment2_rs/run_012`.
 Ví dụ định dạng (số minh họa): `E2 progress: 125/5,875 batches (2.13%) |
 responses 1,000/47,000 | resumed 120 | ETA ~08:20:00`. ETA xuất hiện sau batch
 mới đầu tiên, dựa trên tối đa 20 batch mới gần nhất; không tính thời gian tổng
@@ -86,7 +105,7 @@ Lần chạy mới sẽ tự động:
 
 ## Chạy dài, resume và chia shard
 
-Mặc định ghi vào `experiment2_rs/run_010/`. Chạy lại cùng lệnh để resume. Thay
+Mặc định ghi vào `experiment2_rs/run_012/`. Chạy lại cùng lệnh để resume. Thay
 code/runtime/config/input sẽ bị từ chối; dùng `--output` mới để tạo phiên bản khác.
 Tất cả dữ liệu cũ của E1 và frozen input trees được bảo vệ khỏi output lồng bên trong.
 

@@ -8,9 +8,45 @@ import argparse,sys,time,uuid,os
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 
 
+def migration_checks(sampler,requests,bank,out):
+    """Bounded engineering checks on the server; no primary E2 observations."""
+    from klrd_rs.io import write_json,digest
+    graph=sampler.validate_rotation_graph(bank[0],bank[1])
+    batch=requests[:8]
+    if len(batch)!=8:raise RuntimeError('Migration checks require a fixed batch of eight prompts')
+    runs=[sampler.raw_generate(batch,bank[owner],8) for owner in [0,1,0]]
+    tokens=[[r['token_ids'] for r in run['raw']] for run in runs]
+    if tokens[0]!=tokens[2]:raise RuntimeError('Production owner A/B/A seeded reproduction failed')
+    if any(run['execution_mode']!='production_decode_graph' for run in runs):
+        raise RuntimeError('Migration generation did not use the production configuration')
+    if not any(len(row)>1 for row in tokens[0]):
+        raise RuntimeError('All migration requests stopped before decode; graph decode coverage unavailable')
+    production_environment=dict(sampler.environment)
+    with sampler.diagnostic_mode():
+        eager_environment=dict(sampler.environment)
+        first=sampler.raw_generate(batch,bank[0],8)
+        repeat=sampler.raw_generate(batch,bank[0],8)
+        if [r['token_ids'] for r in first['raw']]!=[r['token_ids'] for r in repeat['raw']]:
+            raise RuntimeError('Eager diagnostic seeded reproduction failed')
+        cached=sampler.raw_generate([batch[0]],bank[0],3,probe=True)
+        if len(cached['trace'])!=3 or len(cached['raw'][0]['token_ids'])!=3:
+            raise RuntimeError('Incomplete actual V1 prefill/decode diagnostic trace')
+        if [row['position'] for row in cached['trace']]!=list(range(len(batch[0]['prompt_ids'])-1,len(batch[0]['prompt_ids'])+2)):
+            raise RuntimeError('Actual V1 cached decode trace positions do not match the request')
+    result={'status':'MIGRATION_CHECKS_EXECUTED','rotation_graph':graph,
+        'production_A_B_A_seeded_sequences_identical':True,'eager_seeded_sequences_identical':True,
+        'actual_eager_trace_states':len(cached['trace']),
+        'production_engine':production_environment,'diagnostic_engine':eager_environment,
+        'production_token_sequence_sha256':digest(tokens[0]),
+        'production_A_B_tokens_differ':tokens[0]!=tokens[1],
+        'whole_engine_graph_dispatch_observed':None,
+        'scope':'Runtime/replay checks only. No claim of numerical parity, whole-engine graph dispatch proof, speedup or scientific acceptance.'}
+    write_json(out/'migration_checks.json',result)
+    return result
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--mode',choices=['parity','benchmark'],default='parity')
+    parser.add_argument('--mode',choices=['parity','benchmark','migration'],default='parity')
     parser.add_argument('--jobs',type=int,default=2,help='Benchmark batches per clean/key0; no scientific trials')
     parser.add_argument('--numerical-diagnostics',action='store_true',help='Optional non-blocking numerical diagnostics before benchmark; disabled by default')
     parser.add_argument('--output',type=Path)
@@ -51,6 +87,10 @@ def main():
         if sampler.environment['readout_hashes']!=[expected]:raise ValueError('vLLM model differs from frozen E1')
         requests=[{'prompt_id':r['prompt_id'],'prompt_ids':r['prompt_ids'],
             'seed':generation_seed(cfg.generation_seed,0,r['prompt_id'],'vllm_server_diagnostic')} for r in rows]
+        if args.mode=='migration':
+            migration_checks(sampler,requests,frozen['bank'],out)
+            print('Migration checks executed:',out/'migration_checks.json',flush=True)
+            return 0
         gates=validate_vllm_sampler(sampler,requests,frozen['bank'],cfg,out,
             enabled=args.mode=='parity' or args.numerical_diagnostics)
         if args.mode=='parity':

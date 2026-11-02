@@ -1,9 +1,9 @@
-"""Out-of-tree exact teacher for vLLM 0.10.2. Imported by the GPU worker only.
+"""Out-of-tree exact teacher for vLLM 0.32.0. Imported by the GPU worker only.
 
-Upstream: v0.10.2/model_executor/models/qwen2.py and layers/layernorm.py.
+Upstream: v0.32.0/model_executor/models/qwen2.py and layers/layernorm.py.
 Their Apache-2.0 implementations remain installed, unmodified and inherited.
 """
-from functools import partial
+from vllm.forward_context import get_forward_context
 import torch
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.models.qwen2 import Qwen2ForCausalLM
@@ -15,6 +15,21 @@ def rotate_final_state(hidden,residual,p,q,angles):
     combined=hidden if residual is None else hidden+residual
     return rotate(combined,p,q,angles),combined
 
+
+def trace_query_spans(metadata,token_count):
+    """Actual scheduled queries only; V1 may append zero-length padding slots."""
+    actual=int(metadata.num_actual_tokens)
+    boundaries=metadata.query_start_loc.detach().cpu().tolist()
+    if not boundaries or boundaries[0]!=0 or not 0<actual<=token_count:
+        raise RuntimeError('Invalid V1 diagnostic attention metadata')
+    spans=[]
+    for start,end in zip(boundaries,boundaries[1:]):
+        if not 0<=start<=end<=actual:
+            raise RuntimeError('Invalid V1 diagnostic query boundary')
+        if end>start:spans.append((start,end))
+    if not spans or spans[-1][1]!=actual:
+        raise RuntimeError('Incomplete V1 diagnostic query coverage')
+    return spans
 
 class RotationFinalRMSNorm(RMSNorm):
     @classmethod
@@ -62,27 +77,38 @@ class KLRDRSQwen2ForCausalLM(Qwen2ForCausalLM):
         if vllm_config.quant_config is not None:raise RuntimeError('No quantization in exact E2 teacher')
         super().__init__(vllm_config=vllm_config,prefix=prefix)
         self.model.norm=RotationFinalRMSNorm.from_native(self.model.norm,32)
+        self.register_buffer('_klrd_logits_finite',torch.ones((),dtype=torch.bool,
+            device=self.model.norm.weight.device),persistent=False)
         self._klrd_trace_enabled=False;self._klrd_trace=[]
+        self._klrd_diagnostic_eager=bool(vllm_config.model_config.enforce_eager)
 
     def forward(self,input_ids,positions,intermediate_tensors=None,inputs_embeds=None):
         output=super().forward(input_ids,positions,intermediate_tensors,inputs_embeds)
         if self._klrd_trace_enabled:
             flat=positions.reshape(-1)
-            # Probe mode permits one decoding stream, or a prefill-only batch.
-            ends=torch.where(flat[1:]==0)[0].tolist()+[len(flat)-1]
+            metadata=get_forward_context().attn_metadata
+            if not isinstance(metadata,dict) or not metadata:
+                raise RuntimeError('Missing actual V1 attention metadata for diagnostic')
+            metadata=next(iter(metadata.values()))
+            spans=trace_query_spans(metadata,len(flat))
             captured=self.model.norm.last_capture
-            self._klrd_pending_trace_rows=len(ends)
-            for index in ends:
+            if captured is None:raise RuntimeError('Missing eager final-norm capture')
+            self._klrd_pending_trace_rows=len(spans)
+            for start,end in spans:
+                index=end-1
                 self._klrd_trace.append({'residual':captured['residual'][index].float().cpu().numpy(),
                     'normalized':captured['normalized'][index].float().cpu().numpy(),
-                    'position':int(flat[index].item()),'input_token_id':int(input_ids.reshape(-1)[index].item())})
+                    'position':int(flat[index].item()),'input_token_id':int(input_ids.reshape(-1)[index].item()),
+                    'query_token_ids':input_ids.reshape(-1)[start:end].cpu().tolist()})
             self.model.norm.last_capture=None
         return output
 
-    def compute_logits(self,hidden_states,sampling_metadata):
-        logits=super().compute_logits(hidden_states,sampling_metadata)
-        if logits is not None and not torch.isfinite(logits).all():
-            raise RuntimeError('Nonfinite vLLM logits during generation')
+    def compute_logits(self,hidden_states):
+        logits=super().compute_logits(hidden_states)
+        if logits is not None:
+            # GPU-only reduction/update: no Tensor->Python bool synchronization
+            # per token. The worker checks this flag once after engine.generate.
+            self._klrd_logits_finite.logical_and_(torch.isfinite(logits).all())
         if self._klrd_trace_enabled and logits is not None:
             if not self._klrd_trace:raise RuntimeError('Missing actual forward trace')
             count=self._klrd_pending_trace_rows
@@ -93,30 +119,42 @@ class KLRDRSQwen2ForCausalLM(Qwen2ForCausalLM):
         return logits
 
 
+@torch.inference_mode()
 def configure_model(model,p,q):
     norm=model.model.norm
     if not isinstance(norm,RotationFinalRMSNorm):raise RuntimeError('Custom Qwen2 was not selected')
     norm.configure(p,q,torch.zeros(32))
+    model._klrd_logits_finite.fill_(True) # discard initialization/profile probes
     from ..continuation import tensor_sha256
     return {'weight':tensor_sha256(model.lm_head.weight[:model.config.vocab_size]),
         'gain':tensor_sha256(norm.weight),'bias':None}
 
 
+@torch.inference_mode()
 def set_owner(model,angles):
     norm=model.model.norm
     norm.configure(norm.P,norm.Q,angles)
     return {'fixed_owner_set':True}
 
 
+def check_logits_finite(model):
+    """One CPU/GPU synchronization per completed batch, never per decode step."""
+    if not bool(model._klrd_logits_finite.item()):
+        raise RuntimeError('Nonfinite vLLM logits during generation; batch rejected')
+    return {'logits_finite':True}
+
+
 def set_native_baseline(model,enabled):
     norm=model.model.norm
     if enabled and bool(torch.count_nonzero(norm.angles)):
         raise RuntimeError('Native baseline requires rotation disabled')
+    if not model._klrd_diagnostic_eager:raise RuntimeError('Native baseline requires an eager diagnostic engine')
     norm.native_baseline=bool(enabled)
     return {'native_original_norm':norm.native_baseline}
 
 
 def start_trace(model):
+    if not model._klrd_diagnostic_eager:raise RuntimeError('Trace requires an eager diagnostic engine')
     model._klrd_trace=[];model._klrd_trace_enabled=True
     model.model.norm.capture=True
 
@@ -169,3 +207,52 @@ def stop_linear_shape_probe(model):
     model._klrd_linear_saved=[]
     rows=getattr(model,'_klrd_linear_probe',[]);model._klrd_linear_probe=[]
     return rows
+
+
+
+@torch.inference_mode()
+def check_rotation_graph(model,angles_a,angles_b):
+    """Server diagnostic only: prove captured norm reads mutable owner buffers.
+
+    This captures the actual installed final norm and exact rotation on a small
+    input. It does not claim to observe vLLM's whole-model graph dispatch.
+    """
+    norm=model.model.norm
+    if norm.capture or norm.native_baseline or model._klrd_trace_enabled:
+        raise RuntimeError('Graph check requires ordinary exact-rotation mode')
+    original=norm.angles.detach().clone()
+    addresses=[norm.P.data_ptr(),norm.Q.data_ptr(),norm.angles.data_ptr()]
+    hidden=(torch.linspace(-1.,1.,norm.hidden_size,device=norm.weight.device,dtype=torch.float32)
+        +norm.P.sum(-1)+.3*norm.Q.sum(-1))[None,:].repeat(2,1)
+    residual=torch.ones_like(hidden)*.25
+    keys=[torch.as_tensor(a,device=norm.angles.device,dtype=torch.float32) for a in [angles_a,angles_b]]
+    if torch.equal(keys[0],keys[1]):raise RuntimeError('Graph check needs distinct owner angles')
+    def forward():return norm(hidden,residual)[0]
+    try:
+        norm.configure(norm.P,norm.Q,keys[0])
+        stream=torch.cuda.Stream(device=hidden.device)
+        stream.wait_stream(torch.cuda.current_stream(hidden.device))
+        with torch.cuda.stream(stream):
+            for _ in range(3):forward()
+        torch.cuda.current_stream(hidden.device).wait_stream(stream)
+        graph=torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):captured=forward()
+        outputs=[];errors=[]
+        for angles in [keys[0],keys[1],keys[0]]:
+            norm.configure(norm.P,norm.Q,angles)
+            expected=forward().clone()
+            graph.replay()
+            observed=captured.clone()
+            if not bool(torch.isfinite(observed).all()):raise RuntimeError('Nonfinite rotation graph output')
+            torch.testing.assert_close(observed,expected,rtol=1e-6,atol=1e-6)
+            errors.append(float((observed-expected).abs().max()))
+            outputs.append(observed)
+        if not torch.equal(outputs[0],outputs[2]):raise RuntimeError('Owner A was not restored during graph replay')
+        if torch.equal(outputs[0],outputs[1]):raise RuntimeError('Captured rotation did not respond to owner B')
+        if addresses!=[norm.P.data_ptr(),norm.Q.data_ptr(),norm.angles.data_ptr()]:
+            raise RuntimeError('Rotation buffer storage changed after capture')
+        return {'status':'PASS','scope':'Actual final-norm graph only; not whole-engine dispatch proof',
+            'A_B_A_replay_matches_eager':True,'owner_outputs_differ':True,
+            'buffer_addresses_preserved':True,'max_abs_error':max(errors)}
+    finally:
+        norm.configure(norm.P,norm.Q,original)

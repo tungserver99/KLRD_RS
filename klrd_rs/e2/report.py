@@ -3,6 +3,7 @@ from pathlib import Path
 import hashlib,json,zipfile,os
 from ..io import write_json,read_json
 from .anchor import INPUT_FOLDER
+from .vllm_runtime import TARGET_VERSION
 
 
 LIMITATIONS='''The spherical null is exact over independent random keys conditional on fixed nonzero V,
@@ -26,7 +27,7 @@ def write_report(out,summary,statistical,cfg):
     write_json(out/'report/summary.json',summary)
     lines=['# Experiment 2: exact-teacher free generation','',f"Status: **{summary['status']}**",'',
         f"Teacher outputs: {summary['primary_actual_teacher_responses']}/{cfg.prompt_count*len(cfg.owners)} canonically scored; clean: {summary['clean_actual_responses']}/{cfg.prompt_count}.",
-        'Generation: custom vLLM 0.10.2 FP32 with exact pre-final-RMSNorm latent rotation and native KV cache. No FP64 Linear or HF generation fallback. Verification retains the existing HF FP32-boundary/FP64-Linear policy; readout/probability/KL stay FP32.','',
+        f'Generation: custom vLLM {TARGET_VERSION} V1 FP32 with exact pre-final-RMSNorm latent rotation and native KV cache. No FP64 Linear or HF generation fallback. Verification retains the existing HF FP32-boundary/FP64-Linear policy; readout/probability/KL stay FP32.','',
         '|Owner|Q|Disjoint groups|Owner nominal|Owner conservative|Clean conservative|Wrong conservative mean / worst|21-way correct / trials|',
         '|---|---:|---:|---:|---:|---:|---:|---:|']
     for row in statistical['per_key']:
@@ -64,7 +65,7 @@ def package(root,out):
         files['code/klrd_rs/'+name]=root/'klrd_rs'/name
     if (root/INPUT_FOLDER/'source_receipt.json').exists():files['frozen_source_receipt.json']=root/INPUT_FOLDER/'source_receipt.json'
     for name in ['tests/test_exp2_exclusion_fix.py','tests/test_exp2_attention_fix.py',
-        'tests/test_exp2_vllm_contract.py','tests/test_e2_numerical_policy.py','tools/check_vllm_exp2.py','tools/prepare_exp2_inputs_v2.py']:
+        'tests/test_exp2_vllm_contract.py','tests/test_vllm_v1_migration.py','tests/test_e2_numerical_policy.py','tools/check_vllm_exp2.py','tools/prepare_exp2_inputs_v2.py']:
         if (root/name).exists():files['code/'+name]=root/name
     if (root/'tools/prepare_exp2_inputs.py').exists():files['code/tools/prepare_exp2_inputs.py']=root/'tools/prepare_exp2_inputs.py'
     manifest={}

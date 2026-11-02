@@ -60,7 +60,7 @@ def test_tail_wrapper_keeps_weight_name_and_native_norm_kernel(monkeypatch):
     # Unit-test dispatch only; no default model configuration or weights needed.
     from types import SimpleNamespace
     import vllm.model_executor.custom_op as custom_op
-    dispatch=SimpleNamespace(level=0,use_inductor=False,custom_ops=[],
+    dispatch=SimpleNamespace(mode=0,backend='eager',custom_ops=['all'],
         enabled_custom_ops=set(),disabled_custom_ops=set())
     monkeypatch.setattr(custom_op,'get_cached_compilation_config',lambda:dispatch)
     original=RMSNorm(64,eps=1e-6,dtype=torch.float32).to('cuda')
@@ -100,7 +100,7 @@ def test_missing_engine_never_selects_hf_generation(monkeypatch):
 def test_unreviewed_vllm_version_is_rejected(monkeypatch):
     import klrd_rs.e2.vllm_backend as backend
     monkeypatch.setattr(backend,'version',lambda name:'0.11.0')
-    with pytest.raises(RuntimeError,match='exactly 0.10.2'):backend.require_vllm()
+    with pytest.raises(RuntimeError,match='exactly 0.32.0'):backend.require_vllm()
 
 
 def test_engine_change_keeps_the_exact_frozen_cohort(tmp_path):
@@ -193,12 +193,12 @@ def test_worker_cleanup_tears_down_distributed_groups(monkeypatch):
     from klrd_rs.e2.vllm_backend import cleanup_worker
     import vllm.distributed.parallel_state as parallel
     calls=[]
-    engine=SimpleNamespace(llm_engine=SimpleNamespace(model_executor=SimpleNamespace(shutdown=lambda:calls.append('executor'))))
+    engine=SimpleNamespace(llm_engine=SimpleNamespace(engine_core=SimpleNamespace(shutdown=lambda:calls.append('engine_core'))))
     monkeypatch.setattr(parallel,'destroy_model_parallel',lambda:calls.append('model_parallel'))
     monkeypatch.setattr(parallel,'destroy_distributed_environment',lambda:calls.append('distributed'))
     monkeypatch.setattr(torch.distributed,'is_initialized',lambda:False)
     cleanup_worker(engine)
-    assert calls==['executor','model_parallel','distributed']
+    assert calls==['engine_core','model_parallel','distributed']
 
 
 def test_diagnostic_and_worker_set_cublas_environment_before_torch_import():

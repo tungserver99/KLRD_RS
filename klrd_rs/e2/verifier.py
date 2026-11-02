@@ -6,9 +6,11 @@ from ..math import sphere_p
 
 
 class SphericalBlackBoxVerifier:
-    def __init__(self,model,tokenizer,readout,L,chunk_size=4):
+    def __init__(self,model,tokenizer,readout,L,chunk_size=64):
         self.model,self.tokenizer,self.readout=model,tokenizer,readout
-        self.L=np.asarray(L);self.chunk_size=chunk_size;self.device=readout.weight.device
+        # Retain the frozen config/legacy call signature; token chunking is
+        # an execution detail, not a sampling or statistical parameter.
+        self.L=np.asarray(L);self.chunk_size=max(64,chunk_size);self.device=readout.weight.device
 
     @torch.inference_mode()
     def _score(self,encodings):
@@ -26,16 +28,21 @@ class SphericalBlackBoxVerifier:
         try:self.model.model(input_ids=ids,attention_mask=mask,use_cache=False,return_dict=True)
         finally:hook.remove()
         if len(captured)!=1:raise ValueError('Verifier pre-final-norm capture failed')
+        totals=torch.zeros((len(encodings),self.L.shape[0]),device=self.device,dtype=torch.float64)
         for j,e in enumerate(encodings):
             counts.append(len(e['positions']))
             if not e['positions']:continue
-            value=np.zeros(self.L.shape[0])
+            targets=torch.tensor(e['targets'],device=self.device)
             for start in range(0,len(e['positions']),self.chunk_size):
-                targets=torch.tensor(e['targets'][start:start+self.chunk_size],device=self.device)
                 # Native E1 FP32 score evaluation; accumulation promoted to FP64.
-                score=self.readout.observed(captured[0][j][start:start+self.chunk_size],targets)
-                value+=score.double().cpu().numpy().sum(0)
-            output[j]=self.L@value
+                score=self.readout.observed(captured[0][j][start:start+self.chunk_size],
+                    targets[start:start+self.chunk_size])
+                totals[j].add_(score.sum(0,dtype=torch.float64))
+        # One transfer for the entire batch; retain the existing FP64 NumPy
+        # key projection and spherical verifier unchanged.
+        values=totals.cpu().numpy()
+        for j in range(len(encodings)):
+            output[j]=self.L@values[j]
         return output,np.array(counts,dtype=np.int64)
 
     def score_text_batch(self,rows):

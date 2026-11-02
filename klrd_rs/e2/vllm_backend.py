@@ -10,6 +10,8 @@ import time,os,warnings
 os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG',':4096:8')
 from pathlib import Path
 from functools import partial
+from contextlib import contextmanager
+from collections import defaultdict,deque
 from importlib.metadata import version,PackageNotFoundError
 import numpy as np
 import torch
@@ -17,13 +19,12 @@ from .sampler import SamplerInvalid
 from .cohort import kl_selected
 from ..io import digest
 
-TARGET_VERSION='0.10.2'
-ARCHITECTURE='KLRDRSQwen2ForCausalLM'
+from .vllm_runtime import TARGET_VERSION,ARCHITECTURE,engine_options,runtime_identity
 
 
 def require_vllm():
     try:installed=version('vllm')
-    except PackageNotFoundError:raise SamplerInvalid('vLLM 0.10.2 required; install requirements-vllm.txt on the GPU server. No HF generation fallback.')
+    except PackageNotFoundError:raise SamplerInvalid(f'vLLM {TARGET_VERSION} required; install requirements-vllm.txt on the GPU server. No HF generation fallback.')
     if installed!=TARGET_VERSION:
         raise SamplerInvalid(f'Unsupported vLLM {installed}; target is exactly {TARGET_VERSION}. See README_VLLM_EXPERIMENT2.md')
     return installed
@@ -58,85 +59,130 @@ def result_records(requests,raw,tokenizer,eos,max_tokens,elapsed):
     return records
 
 
+def ordered_prefill_traces(rows,requests):
+    """V1 can reorder scheduled requests; bind by full query, not last token."""
+    pending=defaultdict(deque)
+    for row in rows:pending[tuple(row['query_token_ids'])].append(row)
+    ordered=[]
+    for request in requests:
+        queue=pending[tuple(request['prompt_ids'])]
+        if not queue:raise SamplerInvalid('Missing actual V1 prefill trace for requested prefix')
+        ordered.append(queue.popleft())
+    if any(pending.values()):raise SamplerInvalid('Unexpected extra V1 prefill traces')
+    return ordered
+
+
 def _gpu_worker(connection,settings,p,q):
-    """Spawn target: one resident engine; a fixed key for each synchronous call."""
+    """One resident V1 engine inside this spawned process; idle for key changes."""
     engine=None
     try:
-        # vLLM's lazy architecture inspection uses another Python subprocess.
-        # Propagate the repository root there as well as through multiprocessing.
         root=str(Path(__file__).resolve().parents[2])
         os.environ['PYTHONPATH']=root+(os.pathsep+os.environ['PYTHONPATH'] if os.environ.get('PYTHONPATH') else '')
-        os.environ['VLLM_USE_V1']='0'
-        os.environ['VLLM_ATTENTION_BACKEND']='XFORMERS'
+        # V0 is gone. Remove obsolete inherited switches before importing vLLM.
+        os.environ.pop('VLLM_USE_V1',None)
+        os.environ.pop('VLLM_ATTENTION_BACKEND',None)
+        # Our process already provides isolation. In-process V1 core + uni
+        # executor make shutdown/process exit release the entire teacher engine.
+        os.environ['VLLM_ENABLE_V1_MULTIPROCESSING']='0'
+        os.environ['VLLM_USE_V2_MODEL_RUNNER']='1'
+        os.environ['VLLM_FLOAT32_MATMUL_PRECISION']='highest'
+        if any(os.environ.get(name) not in (None,'0') for name in ['NVIDIA_TF32_OVERRIDE','TORCH_ALLOW_TF32_CUBLAS_OVERRIDE']):
+            raise RuntimeError('TF32 environment override conflicts with the exact FP32 teacher')
         os.environ['VLLM_WORKER_MULTIPROC_METHOD']='spawn'
         require_vllm()
         torch.set_float32_matmul_precision('highest')
         torch.backends.cuda.matmul.allow_tf32=False;torch.backends.cudnn.allow_tf32=False
         torch.use_deterministic_algorithms(True)
+        # tl.dot has its own FP32 precision policy, independent of torch TF32.
+        # Pin both the environment and cached knob inside this worker only.
+        os.environ['TRITON_F32_DEFAULT']='ieee'
+        import triton
+        triton.knobs.language.fp32_default='ieee'
         from vllm import LLM,SamplingParams,ModelRegistry
-        from .vllm_model import configure_model,set_owner,set_native_baseline,start_trace,take_trace,start_linear_shape_probe,stop_linear_shape_probe
+        from .vllm_model import configure_model,set_owner,set_native_baseline,start_trace,take_trace,start_linear_shape_probe,stop_linear_shape_probe,check_logits_finite,check_rotation_graph
         ModelRegistry.register_model(ARCHITECTURE,'klrd_rs.e2.vllm_model:KLRDRSQwen2ForCausalLM')
-        engine=LLM(model=settings['model'],revision=settings['revision'],
-            tokenizer=settings['model'],tokenizer_revision=settings['revision'],
-            dtype='float32',tensor_parallel_size=1,quantization=None,
-            hf_overrides={'architectures':[ARCHITECTURE]},trust_remote_code=False,
-            gpu_memory_utilization=.40,max_model_len=2048,max_num_seqs=8,
-            max_num_batched_tokens=8192,enforce_eager=True,compilation_config=0,
-            enable_prefix_caching=False,enable_chunked_prefill=False,
-            generation_config='vllm',seed=settings['generation_seed'],
-            distributed_executor_backend='uni',swap_space=0)
+        eager=bool(settings['diagnostic_eager'])
+        options=engine_options(settings,eager=eager)
+        engine=LLM(**options)
+        resolved=engine.llm_engine.vllm_config
+        resolved_graph=resolved.compilation_config.cudagraph_mode.name
+        if resolved.model_config.dtype!=torch.float32:
+            raise RuntimeError('vLLM changed the required FP32 model dtype')
+        if torch.backends.cuda.matmul.allow_tf32 or torch.get_float32_matmul_precision()!='highest':
+            raise RuntimeError('vLLM changed the required FP32 matmul precision')
         checks=engine.apply_model(partial(configure_model,p=p,q=q))
         tokenizer=engine.get_tokenizer()
-        connection.send({'ok':True,'data':{'readout_hashes':checks,'tokenizer_vocab_sha256':digest(tokenizer.get_vocab()),
-            'chat_template':tokenizer.chat_template,'engine':'vllm','version':TARGET_VERSION,
-            'dtype':'float32','linear_accumulation':'float32','attention_backend':'XFORMERS',
-            'engine_version':'V0','max_num_seqs':8,'max_model_len':2048,'gpu_memory_utilization':.40,
-            'deterministic_algorithms':torch.are_deterministic_algorithms_enabled(),
-            'TF32':torch.backends.cuda.matmul.allow_tf32,
-            'matmul_precision':torch.get_float32_matmul_precision(),
-            'CUBLAS_WORKSPACE_CONFIG':os.environ.get('CUBLAS_WORKSPACE_CONFIG'),
-            'TF32_environment':{name:os.environ.get(name) for name in ['NVIDIA_TF32_OVERRIDE','TORCH_ALLOW_TF32_CUBLAS_OVERRIDE']},
-            'temperature_location':'SamplingParams only','custom_architecture':ARCHITECTURE}})
+        environment=dict(runtime_identity(),readout_hashes=checks,
+            tokenizer_vocab_sha256=digest(tokenizer.get_vocab()),chat_template=tokenizer.chat_template,
+            engine='vllm',version=TARGET_VERSION,dtype='float32',linear_accumulation='float32',
+            enforce_eager=eager,cudagraph_mode=options['compilation_config']['cudagraph_mode'],
+            enable_chunked_prefill=options['enable_chunked_prefill'],
+            CUDA_graph_decode_requested=not eager,CUDA_graph_decode_observed=None,
+            execution_mode='eager_diagnostic' if eager else 'production_decode_graph',
+            engine_core_multiprocessing=False,
+            triton_f32_default=triton.knobs.language.fp32_default,
+            resolved_cudagraph_mode=resolved_graph,
+            resolved_compilation_mode=int(resolved.compilation_config.mode),
+            resolved_attention_backend=resolved.attention_config.backend.name,
+            resolved_enable_chunked_prefill=resolved.scheduler_config.enable_chunked_prefill,
+            deterministic_algorithms=torch.are_deterministic_algorithms_enabled(),
+            TF32=torch.backends.cuda.matmul.allow_tf32,matmul_precision=torch.get_float32_matmul_precision(),
+            CUBLAS_WORKSPACE_CONFIG=os.environ.get('CUBLAS_WORKSPACE_CONFIG'),
+            TF32_environment={name:os.environ.get(name) for name in ['NVIDIA_TF32_OVERRIDE','TORCH_ALLOW_TF32_CUBLAS_OVERRIDE']},
+            temperature_location='SamplingParams only',custom_architecture=ARCHITECTURE)
+        connection.send({'ok':True,'data':environment})
         while True:
             command=connection.recv()
             if command['op']=='close':break
+            if command['op']=='rotation_graph_check':
+                if eager:raise RuntimeError('Graph validation requires the production engine')
+                from vllm.config import set_current_vllm_config
+                with set_current_vllm_config(engine.llm_engine.vllm_config):
+                    result=engine.apply_model(partial(check_rotation_graph,angles_a=command['angles_a'],angles_b=command['angles_b']))
+                connection.send({'ok':True,'data':result[0]})
+                continue
             if command['op']!='generate':raise RuntimeError('Unknown vLLM worker command')
-            engine.apply_model(partial(set_owner,angles=command['angles']))
+            probe=command['probe'];linear_probe=command.get('linear_probe',False)
             native_baseline=command.get('native_baseline',False)
-            if native_baseline and not command['probe']:raise RuntimeError('Native baseline is diagnostic only')
+            if (probe or linear_probe or native_baseline) and not eager:
+                raise RuntimeError('Python diagnostics require a dedicated eager engine')
+            if native_baseline and not probe:raise RuntimeError('Native baseline is diagnostic only')
+            if probe and len(command['requests'])!=1 and command['max_tokens']!=1:
+                raise RuntimeError('Actual-logit trace supports single-stream decode or prefill-only batches')
+            if linear_probe and command['max_tokens']!=1:
+                raise RuntimeError('Linear shape diagnostic is prefill-only')
+            engine.apply_model(partial(set_owner,angles=command['angles']))
             if native_baseline:
                 confirmation=engine.apply_model(partial(set_native_baseline,enabled=True))
                 if confirmation!=[{'native_original_norm':True}]:raise RuntimeError('Native baseline mode was not confirmed by the actual worker')
-            if command['probe']:
-                if len(command['requests'])!=1 and command['max_tokens']!=1:
-                    raise RuntimeError('Actual-logit trace supports single-stream decode or a prefill-only batch')
-                engine.apply_model(start_trace)
+            if probe:engine.apply_model(start_trace)
             prompts=[{'prompt_token_ids':r['prompt_ids']} for r in command['requests']]
-            params=[SamplingParams(**sampling_kwargs(settings['tau'],r['seed'],command['max_tokens'],
-                settings['eos'],command['probe'])) for r in command['requests']]
-            linear_probe=command.get('linear_probe',False)
-            if linear_probe:
-                if command['max_tokens']!=1:raise RuntimeError('Linear shape diagnostic is prefill-only')
-                engine.apply_model(start_linear_shape_probe)
+            params=[SamplingParams(**sampling_kwargs(settings['tau'],r['seed'],command['max_tokens'],settings['eos'],probe))
+                for r in command['requests']]
+            if linear_probe:engine.apply_model(start_linear_shape_probe)
             begin=time.perf_counter()
             try:outputs=engine.generate(prompts,params,use_tqdm=False)
             finally:
                 linear_rows=engine.apply_model(stop_linear_shape_probe)[0] if linear_probe else []
                 if native_baseline:engine.apply_model(partial(set_native_baseline,enabled=False))
+            engine.apply_model(check_logits_finite)
             elapsed=time.perf_counter()-begin
+            if len(outputs)!=len(command['requests']):raise RuntimeError('Incomplete vLLM response batch')
             raw=[]
             for request,output in zip(command['requests'],outputs):
                 if list(output.prompt_token_ids)!=list(request['prompt_ids']):raise RuntimeError('vLLM changed request ordering/prompt tokens')
                 if len(output.outputs)!=1:raise RuntimeError('Expected one completion per prompt')
-                result=output.outputs[0]
-                sampled=None
-                if command['probe']:
+                result=output.outputs[0];sampled=None
+                if probe:
+                    if result.logprobs is None or len(result.logprobs)!=len(result.token_ids):
+                        raise RuntimeError('Missing actual sampled-token log probabilities')
                     sampled=[float(row[int(token)].logprob) for row,token in zip(result.logprobs,result.token_ids)]
                 raw.append({'token_ids':list(result.token_ids),'finish_reason':result.finish_reason,
                     'stop_reason':result.stop_reason,'sampled_logprobs':sampled})
-            traces=engine.apply_model(take_trace)[0] if command['probe'] else []
+            traces=engine.apply_model(take_trace)[0] if probe else []
+            if probe and command['max_tokens']==1:traces=ordered_prefill_traces(traces,command['requests'])
             connection.send({'ok':True,'data':{'raw':raw,'trace':traces,'seconds':elapsed,
-                'linear_shape_probe':linear_rows,
+                'linear_shape_probe':linear_rows,'execution_mode':environment['execution_mode'],
                 'teacher_mode':'native_original' if native_baseline else 'exact_rotation',
                 'peak_worker_CUDA_allocated_bytes':torch.cuda.max_memory_allocated()}})
     except BaseException as exc:
@@ -146,12 +192,11 @@ def _gpu_worker(connection,settings,p,q):
         cleanup_worker(engine)
         connection.close()
 
-
 def cleanup_worker(engine):
     """Best-effort orderly teardown, including after a failed parity gate."""
     if engine is not None:
-        try:engine.llm_engine.model_executor.shutdown()
-        except Exception as exc:warnings.warn('vLLM executor cleanup: '+type(exc).__name__)
+        try:engine.llm_engine.engine_core.shutdown()
+        except Exception as exc:warnings.warn('vLLM V1 engine core cleanup: '+type(exc).__name__)
     try:
         from vllm.distributed.parallel_state import destroy_model_parallel,destroy_distributed_environment
     except ImportError:return
@@ -174,15 +219,61 @@ class VLLMExactRotationTeacherSampler:
         if self.tokenizer.eos_token_id is not None:self.eos.add(self.tokenizer.eos_token_id)
         if not self.eos or None in self.eos:raise SamplerInvalid('Invalid native EOS policy')
         self.process=None;self.connection=None;self.closed=False;self.peak_worker_bytes=0
-        context=mp.get_context('spawn');self.connection,child=context.Pipe()
-        settings={'model':cfg.model,'revision':cfg.revision,'generation_seed':cfg.generation_seed,
+        self._worker_eager=None;self._diagnostic_depth=0
+        self._settings={'model':cfg.model,'revision':cfg.revision,'generation_seed':cfg.generation_seed,
             'tau':cfg.tau,'eos':sorted(self.eos)}
-        self.process=context.Process(target=_gpu_worker,args=(child,settings,frozen['P'],frozen['Q']))
-        self.process.start();child.close();atexit.register(self.close)
-        self.environment=self._receive(1800)
-        if self.environment['tokenizer_vocab_sha256']!=digest(self.tokenizer.get_vocab()) or self.environment['chat_template']!=self.tokenizer.chat_template:
-            self.close();raise SamplerInvalid('Pinned vLLM/HF tokenizer mismatch')
-        print(f'Custom vLLM {TARGET_VERSION} exact rotation teacher ready: FP32 generation, native KV cache, no HF generation fallback.',flush=True)
+        self._geometry=(frozen['P'],frozen['Q'])
+        self.environment=None
+        atexit.register(self.close)
+        self._start_worker(False)
+        print(f'Custom vLLM {TARGET_VERSION} V1 exact rotation teacher ready: FP32, Triton attention, decode graphs requested.',flush=True)
+
+    def _start_worker(self,eager):
+        context=mp.get_context('spawn');self.connection,child=context.Pipe()
+        settings=dict(self._settings,diagnostic_eager=bool(eager))
+        self.process=context.Process(target=_gpu_worker,args=(child,settings,*self._geometry))
+        try:
+            self.process.start();child.close()
+            environment=self._receive(1800)
+            if (environment['tokenizer_vocab_sha256']!=digest(self.tokenizer.get_vocab())
+                or environment['chat_template']!=self.tokenizer.chat_template):
+                raise SamplerInvalid('Pinned vLLM/HF tokenizer mismatch')
+            if self.environment is not None and environment['readout_hashes']!=self.environment['readout_hashes']:
+                raise SamplerInvalid('vLLM model changed while switching diagnostic engine')
+            self.environment=environment;self._worker_eager=bool(eager)
+        except BaseException:
+            child.close();self._stop_worker();raise
+
+    def _stop_worker(self):
+        process=self.process;connection=self.connection
+        try:
+            if connection is not None and process is not None and process.is_alive():connection.send({'op':'close'})
+        except (BrokenPipeError,EOFError,OSError):pass
+        if process is not None and process.pid is not None:
+            process.join(timeout=30)
+            if process.is_alive():process.terminate();process.join(timeout=5)
+            if process.is_alive():
+                raise SamplerInvalid('Previous vLLM worker did not exit; refuse a second resident engine')
+            process.close()
+        if connection is not None:connection.close()
+        self.process=None;self.connection=None;self._worker_eager=None
+
+    def _ensure_worker(self,eager):
+        if self._worker_eager==bool(eager):return
+        # Wait for exit before allocating another engine on the shared GPU.
+        self._stop_worker();self._start_worker(bool(eager))
+
+    @contextmanager
+    def diagnostic_mode(self):
+        previous=self._worker_eager
+        self._diagnostic_depth+=1
+        try:
+            self._ensure_worker(True)
+            yield
+        finally:
+            self._diagnostic_depth-=1
+            if self._diagnostic_depth==0 and previous is not None:
+                self._ensure_worker(previous)
 
     def _receive(self,timeout=1800):
         begin=time.monotonic();last=begin
@@ -199,6 +290,8 @@ class VLLMExactRotationTeacherSampler:
     def raw_generate(self,requests,key,max_new_tokens=512,probe=False,linear_probe=False,native_baseline=False):
         if native_baseline and (key is not None or not probe):
             raise SamplerInvalid('Native control requires a zero-key diagnostic request')
+        if self.closed:raise SamplerInvalid('vLLM sampler is closed')
+        self._ensure_worker(bool(probe or linear_probe or native_baseline or self._diagnostic_depth))
         angle=np.zeros(self.L.shape[0],dtype=np.float32) if key is None else np.asarray(self.strength*(self.L@np.asarray(key)),dtype=np.float32)
         self.connection.send({'op':'generate','requests':requests,'angles':angle,'max_tokens':max_new_tokens,
             'probe':probe,'linear_probe':linear_probe,'native_baseline':native_baseline})
@@ -218,13 +311,15 @@ class VLLMExactRotationTeacherSampler:
             record['KL_audit_seconds']=elapsed/len(records)
         return records
 
+    def validate_rotation_graph(self,key_a,key_b):
+        """Explicit server diagnostic: actual final-norm CUDA graph A/B/A replay."""
+        if self.closed:raise SamplerInvalid('vLLM sampler is closed')
+        self._ensure_worker(False)
+        angles=[np.asarray(self.strength*(self.L@np.asarray(key)),dtype=np.float32) for key in [key_a,key_b]]
+        self.connection.send({'op':'rotation_graph_check','angles_a':angles[0],'angles_b':angles[1]})
+        return self._receive()
+
     def close(self):
         if self.closed:return
         self.closed=True
-        try:
-            if self.connection is not None and self.process is not None and self.process.is_alive():self.connection.send({'op':'close'})
-        except (BrokenPipeError,EOFError,OSError):pass
-        if self.process is not None:
-            self.process.join(timeout=5)
-            if self.process.is_alive():self.process.terminate();self.process.join(timeout=5)
-        if self.connection is not None:self.connection.close()
+        self._stop_worker()

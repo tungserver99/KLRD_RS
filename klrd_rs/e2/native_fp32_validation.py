@@ -45,7 +45,7 @@ def prepare_policy(requests,sampler,cfg,out):
     by_id={r['prompt_id']:r for r in requests}
     source_dir=Path(__file__).parent
     code={name:sha256(source_dir/name) for name in ['numerical_policy.py','native_fp32_validation.py',
-        'vllm_gates.py','vllm_policy_gates.py','vllm_model.py','vllm_backend.py','sampler.py',
+        'vllm_gates.py','vllm_policy_gates.py','vllm_model.py','vllm_backend.py','vllm_runtime.py','sampler.py',
         '../math.py','../readout.py']}
     path=out/'tests/numerical_policy_spec.json'
     if path.exists():

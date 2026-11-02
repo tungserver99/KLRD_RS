@@ -17,11 +17,11 @@ def main(argv=None):
     parser.add_argument('--max-jobs',type=int,help='Stop after this many newly scored jobs; mark partial study INCOMPLETE')
     args=parser.parse_args(argv)
     if args.max_jobs is not None and args.max_jobs<1:parser.error('--max-jobs must be positive')
-    root=Path(__file__).resolve().parent;out=(args.output or root/'experiment2_rs/run_010').resolve()
-    for name in ['experiment1_rs','experiment1_rs_continuation','inputs','continuation_inputs','e2_inputs','e2_inputs_v2',*[f'experiment2_rs/run_{i:03}' for i in range(1,10)]]:
+    root=Path(__file__).resolve().parent;out=(args.output or root/'experiment2_rs/run_012').resolve()
+    for name in ['experiment1_rs','experiment1_rs_continuation','inputs','continuation_inputs','e2_inputs','e2_inputs_v2',*[f'experiment2_rs/run_{i:03}' for i in range(1,12)]]:
         protected=(root/name).resolve()
         if out==protected or protected in out.parents or out in protected.parents:
-            parser.error('E1 runs, frozen inputs and historical E2 runs 001 through 009 are read-only; select an independent vLLM output directory')
+            parser.error('E1 runs, frozen inputs and historical E2 runs 001 through 011 are read-only; select an independent vLLM output directory')
     from klrd_rs.io import write_json
     from klrd_rs.e2.config import E2Config
     from klrd_rs.e2.frozen import load_frozen,ArtifactError
