@@ -13,11 +13,34 @@ In the notebook, from the project directory and the new environment:
 ```
 
 In a terminal, use `bash run_experiment2.sh`. The launcher remains exactly
-`python main_exp2.py`; it installs nothing and adds no required diagnostic step.
+`python main_exp2.py --pilot-only`; it installs nothing and adds no required diagnostic step.
 It writes to `experiment2_rs/run_012/`. Repeating the same command resumes that
 run only when its code, runtime, input and configuration identities still match.
 Runs 001 through 011 and frozen input/E1 directories are protected. No old
 responses, score caches or job checkpoints are imported into run_012.
+
+## Default scope: the existing 9,000-response pilot
+
+The shell launcher now selects the existing `--pilot-only` mode: group0 only,
+eight owners ×1,000 prompts plus1,000 clean responses; no stress-key generation.
+That yields ten disjoint Q100 groups and one Q1000 group per owner. The existing
+40 smoke responses are additional and excluded from primary statistics.
+No generation/verifier/KL code, numerical gate or frozen scientific config changes.
+
+Stop the current full process before relaunching. Valid committed group0 batches
+and score caches in run_012 are reused. Only launcher/docs/test source changes;
+the Python files hashed in the job identity remain identical. Do not change the
+runtime/code/output or delete identity/checkpoints to force reuse.
+
+The existing pilot reports `PILOT_ONLY`; full-study `complete` remains false and
+the CLI exits1 until full completion. Full planned denominators remain visible.
+If this directory already contains other groups/stress observations, the existing
+analyzer includes those saved observations too; it is not a pure group0-only
+analysis in that case. No observations are removed by selecting pilot mode.
+
+To explicitly continue the full study later, use `python main_exp2.py` (or
+`!python main_exp2.py` in the notebook) in the same environment/output. The shell
+launcher continues to select pilot; it will not automatically expand the study.
 
 ## Prepare a separate GPU server environment once
 

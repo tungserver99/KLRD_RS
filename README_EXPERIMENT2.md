@@ -2,13 +2,42 @@
 
 **Runtime hiện tại: vLLM 0.32.0 / V1, FP32 / TRITON_ATTN; output `experiment2_rs/run_012/`.**
 
+**Mặc định launcher: pilot 9.000 primary responses, không chạy full 47.000.**
+Dùng group0 đã chốt: 8 owner keys × 1.000 prompts = 8.000 fingerprint responses,
+cộng 1.000 clean responses; không sinh stress keys23/59. Mỗi key có 10 nhóm
+Q=100 không giao nhau và 1 nhóm Q=1000; Q=100 vẫn lồng trong Q=1000.
+Các lượt smoke hiện có (20 prompts × clean/key0 = 40 responses) là bổ sung,
+không tính vào 9.000 primary responses. Không thêm numerical gates, không đổi
+vLLM, precision, verifier, KL audit, key/seed/λ hoặc dữ liệu frozen.
+
+Dừng tiến trình full hiện tại trước khi chạy lại launcher. Lượt chạy vẫn dùng
+`experiment2_rs/run_012/`; các batch group0 đã commit và score cache hợp lệ được
+dùng lại nếu code/runtime/config/output không đổi. Thay đổi này chỉ chạm launcher,
+tài liệu và test contract; các file Python tham gia job identity được giữ nguyên.
+Không xóa dữ liệu cũ. Nếu run_012 đã có nhóm1–4/stress, analyzer hiện tại vẫn tổng
+hợp dữ liệu đã lưu đó; báo cáo không phải một tập pilot group0 thuần túy.
+
+Pilot kết thúc với nhãn `PILOT_ONLY`; `complete=False`/exit code1 thể hiện chưa
+hoàn tất full study, không tự động kết luận phương pháp thất bại. Đọc số lượng
+nhóm thực có trong báo cáo; mẫu số kỳ vọng full vẫn giữ nguyên. Pilot chưa cho
+phép kết luận FPR mạnh hoặc tự động chuyển sang LoRA.
+
+Khi chủ động mở rộng full, từ cùng môi trường/thư mục/output chạy:
+
+```python
+!python main_exp2.py
+```
+
+Lệnh full này tái sử dụng các batch pilot hợp lệ; `!bash run_experiment2.sh` vẫn
+luôn chọn pilot. Không tự mở rộng full sau pilot.
+
 Lệnh notebook giữ nguyên:
 
 ```python
 !bash run_experiment2.sh
 ```
 
-File `run_experiment2.sh` vẫn chỉ chứa `python main_exp2.py`. Chuẩn bị environment
+File `run_experiment2.sh` vẫn chỉ chứa `python main_exp2.py --pilot-only`. Chuẩn bị environment
 riêng trên GPU server bằng `requirements-vllm.txt`; Python >=3.11,<3.15 và
 Transformers >=5.16.1,<5.20.0. Khởi chạy notebook từ environment mới để `python`
 trong PATH trỏ đúng môi trường. Không nâng package trong environment đang chạy.
@@ -38,7 +67,7 @@ Chạy từ thư mục dự án với Python/CUDA environment của bạn:
 bash run_experiment2.sh
 ```
 
-File `.sh` chỉ chứa `python main_exp2.py`, không cài env, không kích hoạt env,
+File `.sh` chỉ chứa `python main_exp2.py --pilot-only`, không cài env, không kích hoạt env,
 không chứa đường dẫn Python hoặc yêu cầu file config thủ công.
 
 Tiến độ/ETA hiện trực tiếp khi chạy file sh, không cần monitor riêng. Chạy lại

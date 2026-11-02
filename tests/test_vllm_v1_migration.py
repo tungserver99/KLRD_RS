@@ -29,13 +29,13 @@ def test_v1_runtime_preserves_fp32_and_uses_supported_decode_graph_configuration
     assert runtime_identity()['engine_version']=='V1'
 
 
-def test_resolved_identity_matches_runtime_and_launcher_is_unchanged():
+def test_resolved_identity_matches_runtime_and_launcher_selects_pilot():
     from klrd_rs.e2.config import E2Config
     from klrd_rs.e2.vllm_runtime import runtime_identity
     resolved=E2Config().resolved()
     assert all(resolved[k]==v for k,v in runtime_identity().items())
     root=Path(__file__).resolve().parents[1]
-    assert (root/'run_experiment2.sh').read_text().strip()=='python main_exp2.py'
+    assert (root/'run_experiment2.sh').read_text().strip()=='python main_exp2.py --pilot-only'
     source=(root/'main_exp2.py').read_text()
     assert "experiment2_rs/run_012" in source and 'range(1,12)' in source
 
