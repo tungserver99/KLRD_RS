@@ -1,0 +1,187 @@
+{
+  "status": "complete",
+  "identity": {
+    "e3_identity": "d62f8e6c907e2aa47691c60d934afb302269fd8c4b191b75401548b51dd6b34e",
+    "checkpoint": "/content/drive/Othercomputers/My Computer/Google Drive Offline/PHD/LLM_fingerprint/KLRD_RS/experiment3_full/run_001/merged_student",
+    "calibration_model": "Qwen/Qwen2.5-1.5B",
+    "calibration_revision": "8faed761d45a263340a0528343f099c05c9a4323",
+    "output_vocab": {
+      "model_output_vocab_size": 151936,
+      "tokenizer_token_count": 151665,
+      "max_token_id": 151664
+    },
+    "calibration_texts_sha256": "9855bc9d1f644d21304f50d52370b68f5ff4b14cedb833c72060189c1ff028d8",
+    "seed_words_sha256": "1028a002ba47274b31d9208b0763ee59535fe7868857f6498d366ce34c4ee530",
+    "probability_threshold": 0.0001,
+    "clip_quantile": 0.999,
+    "contexts": 128,
+    "tokenizer_compatibility": {
+      "vocab_size": 151665,
+      "vocabulary_sha256": "698c955b0b438a535083d1771ef8b41069afba4b3d51a482558bdb68ea55e800",
+      "special_token_metadata_match": false,
+      "special_tokens": {
+        "eos_token": "<|im_end|>",
+        "pad_token": "<|endoftext|>"
+      },
+      "all_special_ids": [
+        151643,
+        151644,
+        151645,
+        151646,
+        151647,
+        151648,
+        151649,
+        151650,
+        151651,
+        151652,
+        151653,
+        151654,
+        151655,
+        151656
+      ],
+      "attacked_special_tokens": {
+        "eos_token": "<|im_end|>",
+        "pad_token": "<|endoftext|>"
+      },
+      "calibration_special_tokens": {
+        "eos_token": "<|endoftext|>",
+        "pad_token": "<|endoftext|>"
+      },
+      "attacked_all_special_ids": [
+        151643,
+        151644,
+        151645,
+        151646,
+        151647,
+        151648,
+        151649,
+        151650,
+        151651,
+        151652,
+        151653,
+        151654,
+        151655,
+        151656
+      ],
+      "calibration_all_special_ids": [
+        151643,
+        151644,
+        151645,
+        151646,
+        151647,
+        151648,
+        151649,
+        151650,
+        151651,
+        151652,
+        151653,
+        151654,
+        151655,
+        151656
+      ],
+      "attacked_tokenizer_revision": null,
+      "calibration_tokenizer_revision": null
+    }
+  },
+  "preceding_tokens": 5506,
+  "valid_seed_words": 5506,
+  "calibration_texts": 128,
+  "probability_threshold": 0.0001,
+  "clip_quantile": 0.999,
+  "algorithm_source": "/content/drive/Othercomputers/My Computer/Google Drive Offline/PHD/LLM_fingerprint/KLRD_RS/experiment4_satml/vendor/mlprints/bigram_suppression.py",
+  "algorithm_source_sha256": "1c4bca2bf49fa151dba39410906b1050ba394ccd3f538e14e8ca653e2a44356f",
+  "tokenizer_compatibility": {
+    "vocab_size": 151665,
+    "vocabulary_sha256": "698c955b0b438a535083d1771ef8b41069afba4b3d51a482558bdb68ea55e800",
+    "special_token_metadata_match": false,
+    "special_tokens": {
+      "eos_token": "<|im_end|>",
+      "pad_token": "<|endoftext|>"
+    },
+    "all_special_ids": [
+      151643,
+      151644,
+      151645,
+      151646,
+      151647,
+      151648,
+      151649,
+      151650,
+      151651,
+      151652,
+      151653,
+      151654,
+      151655,
+      151656
+    ],
+    "attacked_special_tokens": {
+      "eos_token": "<|im_end|>",
+      "pad_token": "<|endoftext|>"
+    },
+    "calibration_special_tokens": {
+      "eos_token": "<|endoftext|>",
+      "pad_token": "<|endoftext|>"
+    },
+    "attacked_all_special_ids": [
+      151643,
+      151644,
+      151645,
+      151646,
+      151647,
+      151648,
+      151649,
+      151650,
+      151651,
+      151652,
+      151653,
+      151654,
+      151655,
+      151656
+    ],
+    "calibration_all_special_ids": [
+      151643,
+      151644,
+      151645,
+      151646,
+      151647,
+      151648,
+      151649,
+      151650,
+      151651,
+      151652,
+      151653,
+      151654,
+      151655,
+      151656
+    ],
+    "attacked_tokenizer_revision": null,
+    "calibration_tokenizer_revision": null
+  },
+  "prefix_cache": {
+    "status": "passed",
+    "prefix_length_max": 135,
+    "prefix_length_min": 26,
+    "parity": {
+      "attacked": {
+        "words_checked": 3,
+        "contexts_per_word": 8,
+        "max_abs_error": 7.867813110351562e-05,
+        "atol_rtol": {
+          "atol": 0.0001,
+          "rtol": 0.0001
+        }
+      },
+      "calibration": {
+        "words_checked": 3,
+        "contexts_per_word": 8,
+        "max_abs_error": 0.0390625,
+        "atol_rtol": {
+          "atol": 0.05,
+          "rtol": 0.005
+        }
+      }
+    }
+  },
+  "scoring": "official BigramSuppressionAttackModel maximum/z-score, quantile clipping, signed scores",
+  "diagnostics": "64 contexts replayed from cached forward logits; final mapping uses all 128"
+}

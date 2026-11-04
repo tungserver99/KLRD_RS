@@ -12,7 +12,9 @@ from experiment4_satml.core import (assert_tokenizer_compatible, calibration_pro
     run_cached_next_token_logits, split_cached_prefix, top_seed_words,
     valid_seed_words, validate_output_vocab_sizes)
 from experiment4_satml.pipeline import (_cached_hub_revision, _estimate_mapping_eta_seconds,
-    _jsonl, _unique_index)
+    _apply_bigram_adjustment, _first_captured_batches, _generation_root,
+    _make_vllm_suppression_processor, _jsonl,
+    _normalize_eos_token_ids, _unique_index)
 
 source_path = ROOT / "experiment4_satml/vendor/mlprints/bigram_suppression.py"
 tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
@@ -125,6 +127,84 @@ def test_mapping_eta_uses_only_newly_completed_shards():
     assert _estimate_mapping_eta_seconds(0.0, 0, 5400) is None
 
 
+@pytest.mark.parametrize("batch_size", [8, 16, 64, 128])
+def test_mapping_64_context_diagnostic_slices_exact_rows_for_any_batch_size(batch_size):
+    logits = torch.arange(128).reshape(128, 1)
+    captured = [{"scores": [logits[start:start + batch_size]]}
+                for start in range(0, 128, batch_size)]
+    selected = _first_captured_batches(captured, 64)
+    replayed = torch.cat([batch["scores"][0] for batch in selected])
+    assert replayed.shape[0] == 64
+    assert replayed[:, 0].tolist() == list(range(64))
+
+
+@pytest.mark.parametrize("eos_token_id", [151645, [151645], (151643, 151645)])
+def test_generation_eos_ids_accept_scalar_or_collection(eos_token_id):
+    assert _normalize_eos_token_ids(eos_token_id) == (
+        [151645] if isinstance(eos_token_id, int) else list(eos_token_id))
+
+
+def test_generation_eos_ids_reject_missing_configuration():
+    with pytest.raises(ValueError, match="Missing native model EOS"):
+        _normalize_eos_token_ids(None)
+
+
+def test_experiment4_uses_shared_e3_chat_prompt_encoder():
+    from experiment4_satml.pipeline import _prompt_ids
+    from klrd_rs.data import prompt_ids
+
+    assert _prompt_ids is prompt_ids
+
+
+def test_generation_output_root_separates_vllm_from_existing_transformers_journals(tmp_path):
+    cfg = {"paths": {"output": tmp_path}, "experiment": {}}
+    assert _generation_root(cfg) == tmp_path / "generation"
+    cfg["experiment"]["generation_backend"] = "vllm"
+    assert _generation_root(cfg) == tmp_path / "generation_vllm"
+
+
+def test_bigram_adjustment_adapter_preserves_original_sparse_signed_math():
+    mapping = {9: (torch.tensor([1, 2]), torch.tensor([0.5, -0.25]))}
+    scores = torch.tensor([0.0, 10.0, 10.0, 0.0])
+    actual = _apply_bigram_adjustment(scores, 9, mapping, 4.0)
+    assert torch.equal(actual, torch.tensor([0.0, 8.0, 11.0, 0.0]))
+
+
+def test_vllm_processor_uses_prompt_last_token_then_generated_history(monkeypatch, tmp_path):
+    import sys
+    import types
+
+    class AdapterLogitsProcessor:
+        def __init__(self, vllm_config, device, is_pin_memory):
+            self.device = device
+
+    class SamplingParams:
+        pass
+
+    vllm = types.ModuleType("vllm")
+    vllm.SamplingParams = SamplingParams
+    vllm_v1 = types.ModuleType("vllm.v1")
+    vllm_sample = types.ModuleType("vllm.v1.sample")
+    vllm_lp = types.ModuleType("vllm.v1.sample.logits_processor")
+    vllm_lp.AdapterLogitsProcessor = AdapterLogitsProcessor
+    monkeypatch.setitem(sys.modules, "vllm", vllm)
+    monkeypatch.setitem(sys.modules, "vllm.v1", vllm_v1)
+    monkeypatch.setitem(sys.modules, "vllm.v1.sample", vllm_sample)
+    monkeypatch.setitem(sys.modules, "vllm.v1.sample.logits_processor", vllm_lp)
+
+    mapping_path = tmp_path / "mapping.pt"
+    torch.save({9: (torch.tensor([1]), torch.tensor([0.5])),
+                4: (torch.tensor([2]), torch.tensor([-0.25]))}, mapping_path)
+    processor_type = _make_vllm_suppression_processor(mapping_path)
+    processor = processor_type(None, torch.device("cpu"), False)
+    request = processor.new_req_logits_processor(types.SimpleNamespace(
+        extra_args={"delta": 2.0, "prompt_last_token_id": 9}))
+    first = request([], torch.tensor([0.0, 10.0, 10.0]))
+    second = request([4], torch.tensor([0.0, 10.0, 10.0]))
+    assert torch.equal(first, torch.tensor([0.0, 9.0, 10.0]))
+    assert torch.equal(second, torch.tensor([0.0, 10.0, 10.5]))
+
+
 def test_cached_next_token_logits_match_full_prompt_with_variable_suffix_lengths():
     from transformers import GPT2Config, GPT2LMHeadModel
 
@@ -146,6 +226,22 @@ def test_cached_next_token_logits_match_full_prompt_with_variable_suffix_lengths
     assert torch.allclose(cached, full, atol=1e-5, rtol=1e-5)
 
 
+def test_cached_single_row_uses_physical_padded_cache_width():
+    from transformers import GPT2Config, GPT2LMHeadModel
+
+    torch.manual_seed(29)
+    model = GPT2LMHeadModel(GPT2Config(vocab_size=32, n_positions=32,
+        n_embd=16, n_layer=2, n_head=2, resid_pdrop=0.0,
+        embd_pdrop=0.0, attn_pdrop=0.0)).eval()
+    prefixes = [[1, 2, 3], [4, 5, 6, 7]]
+    cache, _ = prefill_prefix_cache(model, prefixes, "cpu")
+    selected = tuple(tuple(tensor[:1] for tensor in layer) for layer in cache)
+    cached = run_cached_next_token_logits(model, selected, [3], [[8]], 0, "cpu")
+    with torch.inference_mode():
+        full = model(input_ids=torch.tensor([[1, 2, 3, 8]])).logits[:, -1, :]
+    assert torch.allclose(cached, full, atol=1e-5, rtol=1e-5)
+
+
 def test_cached_logits_use_transformers5_dynamic_cache_constructor(monkeypatch):
     import types
     import transformers
@@ -161,10 +257,17 @@ def test_cached_logits_use_transformers5_dynamic_cache_constructor(monkeypatch):
     calls = []
 
     class Model:
+        model = None
+        lm_head = None
+
+        def __init__(self):
+            self.model = self
+            self.lm_head = lambda hidden: torch.zeros((hidden.shape[0], 5))
+
         def __call__(self, **kwargs):
             calls.append(kwargs)
             batch, width = kwargs["input_ids"].shape
-            return types.SimpleNamespace(logits=torch.zeros((batch, width, 5)))
+            return types.SimpleNamespace(last_hidden_state=torch.zeros((batch, width, 3)))
 
     logits = run_cached_next_token_logits(
         Model(), legacy_cache, prefix_length=2, suffix_ids=[[4], [3, 4]],
@@ -189,7 +292,8 @@ def test_prefix_suffix_plan_reconstructs_exact_prompt_tokens_for_every_word_and_
     words = ["alpha", "beta", "gamma"]
     plan = build_prefix_suffix_plan(CharacterTokenizer(), contexts, words, bos_token="<B>")
     assert plan["prefix_length"] > 0
-    assert all(len(prefix) == plan["prefix_length"] for prefix in plan["prefix_ids"])
+    assert plan["prefix_lengths"] == [len(prefix) for prefix in plan["prefix_ids"]]
+    assert len(set(plan["prefix_lengths"])) > 1
     for context_index, context in enumerate(contexts):
         for word in words:
             full_ids = [ord(char) for char in f"<B>{context} {word}"]
@@ -240,8 +344,45 @@ def test_cached_inference_adapter_routes_model_order_and_falls_back_on_prompt_mi
     adapter.begin_word("alpha")
     exact_prompts = [f"{context} alpha" for context in contexts]
     changed_tokenization = adapter(attacked, tokenizer, exact_prompts)
-    assert changed_tokenization["scores"][0][0, 0].item() == -3.0
-    assert fallback_calls[-1] == (attacked, exact_prompts)
+    assert changed_tokenization["scores"][0][:, 0].tolist() == [11.0, 11.0]
+    assert fallback_calls == [(attacked, ["different prompt"])]
+
+
+def test_cached_inference_adapter_does_not_retokenize_planned_suffixes(monkeypatch):
+    import experiment4_satml.core as core
+
+    class CountingTokenizer:
+        calls = 0
+        def encode(self, text, add_special_tokens=False):
+            self.calls += 1
+            return [ord(char) for char in text]
+
+    tokenizer = CountingTokenizer()
+    contexts, words = ["ctx0", "longer ctx1"], ["alpha", "beta"]
+    plan = build_prefix_suffix_plan(tokenizer, contexts, words)
+    planned_calls = tokenizer.calls
+    models = {"attacked": object(), "calibration": object()}
+    monkeypatch.setattr(core, "run_cached_next_token_logits",
+        lambda model, cache, lengths, suffixes, pad, device: torch.zeros((len(suffixes), 2)))
+    adapter = PrefixCacheInferenceAdapter(models["attacked"], models["calibration"], tokenizer,
+        contexts, words, plan, {"attacked": [object()], "calibration": [object()]}, 2,
+        lambda *args, **kwargs: pytest.fail("unexpected fallback"), 0, "cpu")
+    adapter.begin_word("alpha")
+    adapter(models["attacked"], tokenizer, [f"{context} alpha" for context in contexts])
+    assert tokenizer.calls == planned_calls
+
+
+def test_expected_generation_diagnostics_use_only_mapped_generated_bigrams():
+    from experiment4_satml.pipeline import _expected_adjustment_stats
+
+    mapping_stats = {4: (3, 2, 1.5), 9: (1, 1, 0.25)}
+    stats = _expected_adjustment_stats([1, 4], [7, 9, 3], mapping_stats, 2.0)
+    assert stats["steps"] == 3
+    assert stats["covered_steps"] == 2
+    assert stats["expected_adjusted_steps"] == 2
+    assert stats["expected_nonzero_adjustment_values"] == 3
+    assert stats["expected_absolute_adjustment_sum"] == 3.5
+    assert stats["observed_nonzero_logit_changes"] is None
 
 
 def test_cached_inference_adapter_runtime_parity_gate_matches_full_forward():
@@ -297,7 +438,7 @@ def test_fp16_parity_tolerance_accepts_roundoff_but_still_fails_closed(
         return {"scores": [torch.zeros((len(prompts), 4))]}
     adapter = PrefixCacheInferenceAdapter(
         model_a, model_c, FakeTokenizer({"the": 1}), ["context"], ["the"],
-        {"prefix_ids": [[1]], "prefix_length": 1,
+        {"prefix_ids": [[1]], "prefix_lengths": [1], "prefix_length": 1,
          "suffix_ids_by_word": {"the": [[2]]}},
         {"attacked": [cache], "calibration": [cache]}, batch_size=1,
         fallback_inference=full_inference, pad_token_id=0, device="cpu")

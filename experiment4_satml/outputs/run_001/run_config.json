@@ -36,7 +36,8 @@
         1000
       ],
       "wrong_keys": 20,
-      "arc_examples": 1172
+      "arc_examples": 1172,
+      "generation_backend": "vllm"
     }
   },
   "scientific_config_sha256": "3f5a449e7e9b995bf34ea8e2b9912778acff1f94f60f419244e73eaeb5cc527a",

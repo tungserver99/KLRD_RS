@@ -20,3 +20,4 @@ experiment:
   group_sizes: [20, 50, 100, 1000]
   wrong_keys: 20
   arc_examples: 1172
+  generation_backend: vllm

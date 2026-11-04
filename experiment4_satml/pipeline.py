@@ -7,6 +7,8 @@ import os
 import time
 from pathlib import Path
 
+from klrd_rs.data import prompt_ids as _prompt_ids
+
 from .core import (SEED_URL, assert_tokenizer_compatible, atomic_json,
                    adjust_positionwise_logits, build_prefix_suffix_plan,
                    calibration_prompt, choose_calibration_words,
@@ -28,6 +30,12 @@ def _config(path: Path) -> dict:
         p = Path(value).expanduser()
         cfg["paths"][key] = p if p.is_absolute() else (cfg["root"] / p).resolve()
     return cfg
+
+
+def _generation_root(cfg):
+    """Keep vLLM responses separate from any existing Transformers journal."""
+    name = "generation_vllm" if cfg["experiment"].get("generation_backend", "transformers") == "vllm" else "generation"
+    return cfg["paths"]["output"] / name
 
 
 def _e3_state(cfg):
@@ -152,11 +160,13 @@ def _record_run_config(cfg):
     current = {"paths": paths, "models": cfg["models"], "experiment": cfg["experiment"]}
     scientific = json.loads(json.dumps(current))
     scientific["experiment"].pop("calibration_batch_size", None)
+    scientific["experiment"].pop("generation_backend", None)
     path = output / "run_config.json"
     if path.exists():
         previous = json.loads(path.read_text(encoding="utf-8"))
         old_scientific = json.loads(json.dumps(previous["config"]))
         old_scientific["experiment"].pop("calibration_batch_size", None)
+        old_scientific["experiment"].pop("generation_backend", None)
         if old_scientific != scientific:
             raise ValueError("Experiment 4 scientific configuration changed for this output directory")
         sizes = sorted(set(previous.get("calibration_batch_sizes_used", [])) |
@@ -295,6 +305,23 @@ def _save_torch(path: Path, value):
     os.replace(tmp, path)
 
 
+def _first_captured_batches(captured_batches, row_count):
+    """Slice exactly the first row_count logits while preserving batch order."""
+    remaining = int(row_count)
+    selected = []
+    for batch in captured_batches:
+        logits = batch["scores"][0]
+        take = min(remaining, int(logits.shape[0]))
+        if take:
+            selected.append({"scores": [logits[:take]]})
+            remaining -= take
+        if not remaining:
+            break
+    if remaining:
+        raise RuntimeError(f"Cached logits contain fewer than {row_count} contexts")
+    return selected
+
+
 def build_mapping(cfg):
     import torch
     from transformers import AutoModelForCausalLM
@@ -337,6 +364,11 @@ def build_mapping(cfg):
     cache_status = "full_prompt_no_shared_prefix"
     if cache_plan["prefix_length"] > 0:
         batch_size = int(e["calibration_batch_size"])
+        pad_token_id = tokenizer.pad_token_id
+        if pad_token_id is None:
+            pad_token_id = tokenizer.eos_token_id
+        if pad_token_id is None:
+            pad_token_id = 0
         for side, cache_model in (("attacked", model), ("calibration", calibration)):
             print(f"Prefilling {side} KV cache: prefix_length={cache_plan['prefix_length']}, "
                   f"contexts={len(texts)}, batch_size={batch_size}", flush=True)
@@ -344,21 +376,17 @@ def build_mapping(cfg):
                 end = min(len(texts), start + batch_size)
                 try:
                     cache, prefix_length = prefill_prefix_cache(
-                        cache_model, cache_plan["prefix_ids"][start:end], device)
+                        cache_model, cache_plan["prefix_ids"][start:end], device,
+                        pad_token_id=pad_token_id)
                 except torch.cuda.OutOfMemoryError as exc:
                     torch.cuda.empty_cache()
                     raise RuntimeError(
                         f"Prefix-cache prefill ran out of GPU memory at batch_size={batch_size}; "
                         "lower experiment.calibration_batch_size and resume") from exc
-                if prefix_length != cache_plan["prefix_length"]:
-                    raise RuntimeError("Prefix-cache length changed during prefill")
+                if prefix_length != max(cache_plan["prefix_lengths"][start:end]):
+                    raise RuntimeError("Prefix-cache padded width changed during prefill")
                 prefix_caches[side].append(cache)
                 print(f"  {side} prefix contexts {end}/{len(texts)} cached", flush=True)
-        pad_token_id = tokenizer.pad_token_id
-        if pad_token_id is None:
-            pad_token_id = tokenizer.eos_token_id
-        if pad_token_id is None:
-            pad_token_id = 0
         official_inference = mlprints.run_inference
         cache_adapter = PrefixCacheInferenceAdapter(
             model, calibration, tokenizer, texts, words_by_token, cache_plan,
@@ -442,13 +470,16 @@ def build_mapping(cfg):
             # Re-run the original class over the cached first 64 contexts. Only
             # the official forward passes above touch either model; scoring and
             # signed clipping below remain byte-for-byte algorithmically shared.
-            first = {name: rows[:8] for name, rows in captured.items()}
+            first = {name: _first_captured_batches(batches, 64)
+                     for name, batches in captured.items()}
             replay_index = 0
+            replay_batch = {"model": 0, "calibration": 0}
             def replay_inference(*args, **kwargs):
                 nonlocal replay_index
                 label = "model" if replay_index % 2 == 0 else "calibration"
-                batch = (replay_index // 2) % 8
                 replay_index += 1
+                batch = replay_batch[label]
+                replay_batch[label] += 1
                 if batch >= len(first[label]):
                     raise RuntimeError("Cached 64-context replay requested missing logits")
                 return first[label][batch]
@@ -521,7 +552,8 @@ def build_mapping(cfg):
             "vendor/mlprints/bigram_suppression.py").read_bytes()).hexdigest(),
         "tokenizer_compatibility": compatibility,
         "prefix_cache": {"status": cache_status,
-            "prefix_length": cache_plan["prefix_length"], "parity": cache_parity},
+            "prefix_length_max": cache_plan["prefix_length"],
+            "prefix_length_min": min(cache_plan["prefix_lengths"]), "parity": cache_parity},
         "scoring": "official BigramSuppressionAttackModel maximum/z-score, quantile clipping, signed scores",
         "diagnostics": "64 contexts replayed from cached forward logits; final mapping uses all 128"})
     del cache_adapter, prefix_caches, model, calibration
@@ -529,83 +561,246 @@ def build_mapping(cfg):
         torch.cuda.empty_cache()
 
 
-class _ObservedProcessor:
-    """Thin instrumented wrapper that delegates the actual adjustment to SaTML."""
-    def __init__(self, original, mapping, delta):
-        self.delegate = original(mapping, delta)
-        self.mapping = mapping
-        self.delta = float(delta)
-        self.calls = 0
-        self.steps = 0
-        self.covered_steps = 0
-        self.changed = 0
-        self.abs_sum = 0.0
-        self.value_count = 0
-        self.adjusted_steps = 0
+def _expected_adjustment_stats(prefix_ids, generated_ids, mapping_stats, delta):
+    """Compute expected sparse adjustments from generated bigram IDs."""
+    previous_ids = [int(prefix_ids[-1])] + [int(token_id) for token_id in generated_ids[:-1]]
+    covered = adjusted = nonzero_values = 0
+    absolute_sum = 0.0
+    for previous_id in previous_ids:
+        stats = mapping_stats.get(previous_id)
+        if stats is None:
+            continue
+        covered += 1
+        weight_count, nonzero_count, weight_abs_sum = stats
+        expected_nonzero = nonzero_count if delta != 0 else 0
+        if expected_nonzero:
+            adjusted += 1
+            nonzero_values += expected_nonzero
+            absolute_sum += abs(float(delta)) * weight_abs_sum
+    return {"steps": len(generated_ids), "covered_steps": covered,
+        "expected_adjusted_steps": adjusted,
+        "expected_nonzero_adjustment_values": nonzero_values,
+        "expected_absolute_adjustment_sum": absolute_sum,
+        "expected_adjustment_values": sum(mapping_stats.get(token, (0, 0, 0.0))[0]
+            for token in previous_ids if token in mapping_stats),
+        "observed_nonzero_logit_changes": None,
+        "observed_absolute_logit_change_sum": None}
 
-    def __call__(self, input_ids, scores):
-        self.calls += 1
-        previous = input_ids[:, -1].tolist()
-        self.steps += len(previous)
-        self.covered_steps += sum(int(token in self.mapping) for token in previous)
-        before = scores.clone()
-        result = self.delegate(input_ids, scores)
-        diff = (result - before).abs()
-        self.abs_sum += float(diff.sum().item())
-        self.changed += int((diff != 0).sum().item())
-        self.value_count += diff.numel()
-        self.adjusted_steps += int((diff.abs().sum(dim=-1) != 0).sum().item())
-        return result
+
+def _normalize_eos_token_ids(eos_token_id):
+    """Normalize Transformers' scalar or multi-token EOS config to integer IDs."""
+    eos_ids = ([int(eos_token_id)] if isinstance(eos_token_id, int)
+               else [int(token_id) for token_id in (eos_token_id or [])])
+    if not eos_ids:
+        raise ValueError("Missing native model EOS configuration")
+    return eos_ids
+
+
+def _apply_bigram_adjustment(scores, previous_token_id, mapping, delta):
+    """Apply the upstream sparse signed adjustment to one vLLM logits row."""
+    pair = mapping.get(int(previous_token_id))
+    if pair is None:
+        return scores
+    token_ids, weights = pair
+    scores[token_ids] -= float(delta) * weights.to(scores.device)
+    return scores
+
+
+def _make_vllm_suppression_processor(mapping_path):
+    """Build the vLLM 0.33 adapter for the request-level bigram adjustment."""
+    import torch
+    from vllm import SamplingParams
+    from vllm.v1.sample.logits_processor import AdapterLogitsProcessor
+
+    class _RequestSuppression:
+        def __init__(self, mapping, delta, prompt_last_token_id):
+            self.mapping = mapping
+            self.delta = float(delta)
+            self.prompt_last_token_id = int(prompt_last_token_id)
+
+        def __call__(self, output_ids, logits):
+            previous = output_ids[-1] if output_ids else self.prompt_last_token_id
+            return _apply_bigram_adjustment(logits, previous, self.mapping, self.delta)
+
+    class SaTMLVllmLogitsProcessor(AdapterLogitsProcessor):
+        @classmethod
+        def validate_params(cls, params):
+            extra = params.extra_args or {}
+            if not isinstance(extra.get("prompt_last_token_id"), int):
+                raise ValueError("SaTML requires prompt_last_token_id in vLLM extra_args")
+            if not isinstance(extra.get("delta"), (int, float)):
+                raise ValueError("SaTML requires numeric delta in vLLM extra_args")
+
+        def __init__(self, vllm_config, device, is_pin_memory):
+            super().__init__(vllm_config, device, is_pin_memory)
+            print("E4 vLLM processor: loading sparse suppression mapping on GPU.", flush=True)
+            cpu_mapping = torch.load(mapping_path, map_location="cpu", weights_only=True)
+            self.mapping = {int(key): (token_ids.to(device), weights.to(device))
+                            for key, (token_ids, weights) in cpu_mapping.items()}
+            del cpu_mapping
+            print(f"E4 vLLM processor: {len(self.mapping)} preceding-token rows ready.", flush=True)
+
+        def new_req_logits_processor(self, params):
+            extra = params.extra_args or {}
+            self.validate_params(params)
+            return _RequestSuppression(self.mapping, extra["delta"],
+                                       extra["prompt_last_token_id"])
+
+    return SaTMLVllmLogitsProcessor
 
 
 def generate_attacks(cfg):
     import torch
     from transformers import AutoModelForCausalLM, LogitsProcessorList
-    from .core import load_official_mlprints
     state = _e3_state(cfg)
     checkpoint = _merged_checkpoint(state)
     tokenizer, _, _ = _tokenizer(cfg, checkpoint)
     e = cfg["experiment"]
     root = cfg["paths"]["output"]
+    generation_root = _generation_root(cfg)
+    generation_root.mkdir(parents=True, exist_ok=True)
     source = __import__("klrd_rs.e3full.evaluation", fromlist=["load_observations"])
     e3_phase, observations, groups, _ = source.load_observations(state, 1024)
     prompts = observations["student"][0]
-    mapping = torch.load(root / "mapping/suppression_mapping.pt", map_location="cpu", weights_only=True)
-    if not mapping:
+    mapping_path = root / "mapping/suppression_mapping.pt"
+    mapping_cpu = torch.load(mapping_path, map_location="cpu", weights_only=True)
+    if not mapping_cpu:
         raise ValueError("Refusing generation with an empty suppression mapping")
-    official = load_official_mlprints(cfg).BigramSuppressionProcessor
     from klrd_rs.e3.generation import _record, _request_seed
-    model = AutoModelForCausalLM.from_pretrained(checkpoint, torch_dtype=torch.float32,
-        local_files_only=True, trust_remote_code=False, attn_implementation="sdpa").to("cuda").eval()
-    # Keep each full-vocabulary mapping shard on device across generation steps;
-    # the upstream processor's .to(device) then becomes a no-copy operation.
-    for previous_id in list(mapping):
-        token_ids, weights = mapping.pop(previous_id)
-        mapping[previous_id] = (token_ids.to("cuda"), weights.to("cuda"))
-    torch.cuda.empty_cache()
+    mapping_stats = {}
+    for previous_id, (_, weights) in mapping_cpu.items():
+        cpu_weights = weights.detach().float().cpu()
+        mapping_stats[int(previous_id)] = (int(cpu_weights.numel()),
+            int(torch.count_nonzero(cpu_weights)), float(cpu_weights.abs().sum().item()))
+    backend = str(e.get("generation_backend", "transformers")).lower()
+    if backend not in {"transformers", "vllm"}:
+        raise ValueError(f"Unsupported Experiment 4 generation backend: {backend}")
+    execution = {"backend": "transformers.generate", "request_batch_size": 1,
+                 "max_num_seqs": 1, "cudagraph_mode": "NONE"}
+    model = None
+    engine = None
+    eos_ids = None
+    prefix_ids_by_prompt = {}
+    if backend == "transformers":
+        from .core import load_official_mlprints
+        official = load_official_mlprints(cfg).BigramSuppressionProcessor
+        mapping = {int(key): (token_ids.to("cuda"), weights.to("cuda"))
+                   for key, (token_ids, weights) in mapping_cpu.items()}
+        model = AutoModelForCausalLM.from_pretrained(checkpoint, torch_dtype=torch.float32,
+            local_files_only=True, trust_remote_code=False,
+            attn_implementation="sdpa").to("cuda").eval()
+        eos_ids = _normalize_eos_token_ids(model.generation_config.eos_token_id)
+        torch.cuda.empty_cache()
+    else:
+        import triton
+        from transformers import AutoConfig, GenerationConfig
+        from vllm import LLM, SamplingParams
+        from klrd_rs.e3.generation import _vllm_options
+        from klrd_rs.e3.vllm_execution import tuning
+
+        torch.set_float32_matmul_precision("highest")
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        triton.knobs.language.fp32_default = "ieee"
+        generation_config = GenerationConfig.from_pretrained(
+            checkpoint, local_files_only=True)
+        eos_ids = _normalize_eos_token_ids(generation_config.eos_token_id)
+        prefix_ids_by_prompt = {row["prompt_id"]: _prompt_ids(tokenizer, row["prompt"])
+                                for row in prompts}
+        maximum_prompt_length = max(map(len, prefix_ids_by_prompt.values()), default=0)
+        model_config = AutoConfig.from_pretrained(
+            checkpoint, local_files_only=True, trust_remote_code=False)
+        required_context = maximum_prompt_length + int(e["max_new_tokens"])
+        native_context = getattr(model_config, "max_position_embeddings", None)
+        if native_context is not None and required_context > native_context:
+            raise ValueError("Prompt plus requested generation exceeds the model context")
+        execution = dict(tuning(), backend="vllm", cudagraph_mode="FULL_DECODE_ONLY",
+            precision_note="FP32 remains FP32; sampled token identity across backends/batch shapes is not asserted",
+            max_model_len=max(2048, required_context), max_prompt_tokens=maximum_prompt_length)
+        engine_settings = {"model": str(checkpoint), "revision": None,
+            "tokenizer": str(checkpoint), "tokenizer_revision": None, "dtype": "float32"}
+        engine_options = _vllm_options(engine_settings, execution)
+        logits_processor = _make_vllm_suppression_processor(mapping_path)
+        print(f"E4 vLLM: loading model and suppression processor; "
+              f"queue={execution['request_batch_size']}, max concurrent={execution['max_num_seqs']}.",
+              flush=True)
+        engine = LLM(**engine_options, logits_processors=[logits_processor])
+        print("E4 vLLM engine ready.", flush=True)
     settings = {"model": str(checkpoint), "revision": None, "tokenizer": str(checkpoint),
-        "tokenizer_revision": None, "backend": "hf", "dtype": "float32", "temperature": .8,
+        "tokenizer_revision": None, "backend": "hf" if backend == "transformers" else "vllm",
+        "dtype": "float32", "temperature": .8,
         "top_p": 1.0, "top_k": 0, "max_new_tokens": e["max_new_tokens"], "seed": state["cfg"].seed,
-        "kind": "student", "eos_token_ids": [int(model.generation_config.eos_token_id)]}
-    from klrd_rs.e3.data import prompt_ids
+        "kind": "student", "eos_token_ids": eos_ids}
+    mapping_sha256 = hashlib.sha256(mapping_path.read_bytes()).hexdigest()
+    from klrd_rs.io import digest
     for delta in e["deltas"]:
-        out = root / f"generation/delta_{delta}"
+        out = generation_root / f"delta_{delta}"
         journal = out / "responses.jsonl"
         done = _unique_index(_jsonl(journal), "prompt_id", str(journal))
         identity = {"e3_identity": state["identity"], "checkpoint": str(checkpoint),
             "prompts_sha256": hashlib.sha256(json.dumps([r["prompt_id"] for r in prompts]).encode()).hexdigest(),
-            "backend": "transformers.generate", "e3_reference_backend": state["cfg"].generation_backend,
-            "delta": delta, "settings": settings,
-            "mapping_sha256": hashlib.sha256((root / "mapping/suppression_mapping.pt").read_bytes()).hexdigest()}
+            "backend": "transformers.generate" if backend == "transformers" else "vllm.generate",
+            "e3_reference_backend": state["cfg"].generation_backend,
+            "delta": delta, "settings": settings, "mapping_sha256": mapping_sha256}
+        if backend == "vllm":
+            identity["execution"] = execution
         identity_path = out / "identity.json"
         if identity_path.exists() and json.loads(identity_path.read_text(encoding="utf-8")) != identity:
             raise ValueError(f"Refusing to resume {journal}: generation identity/configuration changed")
         if journal.exists() and not identity_path.exists():
             raise ValueError(f"Refusing to resume unbound response journal: {journal}")
         atomic_json(identity_path, identity)
-        processor = _ObservedProcessor(official, mapping, delta)
-        from klrd_rs.io import digest
+        if backend == "vllm":
+            pending = [row for row in prompts if row["prompt_id"] not in done]
+            batch_size = execution["request_batch_size"]
+            for start in range(0, len(pending), batch_size):
+                batch = pending[start:start + batch_size]
+                prefixes = [prefix_ids_by_prompt[row["prompt_id"]] for row in batch]
+                sampling = [SamplingParams(n=1, temperature=settings["temperature"],
+                    top_p=1.0, top_k=-1, max_tokens=settings["max_new_tokens"],
+                    seed=_request_seed(settings, row), ignore_eos=False,
+                    stop_token_ids=settings["eos_token_ids"], detokenize=True,
+                    skip_special_tokens=True, repetition_penalty=1.0,
+                    presence_penalty=0.0, frequency_penalty=0.0,
+                    extra_args={"delta": delta, "prompt_last_token_id": int(prefix[-1])})
+                    for row, prefix in zip(batch, prefixes)]
+                batch_number = start // batch_size + 1
+                print(f"E4 vLLM delta={delta}: batch {batch_number} START "
+                      f"{len(batch)} requests; {len(done)}/{len(prompts)} already saved.", flush=True)
+                started = time.perf_counter()
+                outputs = engine.generate(
+                    [{"prompt_token_ids": prefix} for prefix in prefixes],
+                    sampling_params=sampling, use_tqdm=True)
+                elapsed = time.perf_counter() - started
+                if len(outputs) != len(batch):
+                    raise ValueError("vLLM returned an incomplete batch; no batch rows committed")
+                for output, prefix in zip(outputs, prefixes):
+                    if list(output.prompt_token_ids) != prefix or len(output.outputs) != 1:
+                        raise ValueError("vLLM returned unexpected prompt/order/sample count")
+                for row, prefix, output in zip(batch, prefixes, outputs):
+                    answer = output.outputs[0]
+                    ids = [int(token_id) for token_id in answer.token_ids]
+                    record = _record(row, ids, tokenizer, settings, identity,
+                        finish_reason=answer.finish_reason, stop_reason=answer.stop_reason,
+                        execution=dict(execution, actual_request_batch_size=len(batch)),
+                        elapsed_seconds=elapsed / max(len(batch), 1))
+                    record["attack_diagnostics"] = _expected_adjustment_stats(
+                        prefix, ids, mapping_stats, delta)
+                    record["record_sha256"] = digest(
+                        {key: value for key, value in record.items() if key != "record_sha256"})
+                    _append_jsonl(journal, record)
+                    done[row["prompt_id"]] = record
+                visible_tokens = sum(len(output.outputs[0].token_ids) for output in outputs)
+                print(f"E4 vLLM delta={delta}: {len(done)}/{len(prompts)} saved; "
+                      f"batch generation={elapsed:.1f}s, {visible_tokens / max(elapsed, 1e-9):.1f} tok/s.",
+                      flush=True)
+            if len(done) != len(prompts):
+                raise ValueError(f"delta={delta} vLLM generation journal incomplete")
+        else:
+            processor = official(mapping, delta)
         for row in prompts:
+            if backend != "transformers":
+                break
             if row["prompt_id"] in done:
                 cached = done[row["prompt_id"]]
                 if (cached.get("generation_identity") != digest(identity)
@@ -613,11 +808,9 @@ def generate_attacks(cfg):
                         or cached.get("prompt") != row["prompt"]):
                     raise ValueError(f"Response journal identity mismatch: {row['prompt_id']}")
                 continue
-            prefix = prompt_ids(tokenizer, row["prompt"])
+            prefix = _prompt_ids(tokenizer, row["prompt"])
             input_ids = torch.tensor([prefix], device="cuda", dtype=torch.long)
             seed = _request_seed(settings, row)
-            before_stats = (processor.steps, processor.covered_steps, processor.changed,
-                            processor.abs_sum, processor.value_count, processor.adjusted_steps)
             torch.manual_seed(seed)
             torch.cuda.manual_seed_all(seed)
             with torch.inference_mode():
@@ -628,12 +821,7 @@ def generate_attacks(cfg):
                     eos_token_id=settings["eos_token_ids"], pad_token_id=tokenizer.pad_token_id or settings["eos_token_ids"][0])
             ids = generated[0, len(prefix):].tolist()
             reason = "stop" if ids and ids[-1] in settings["eos_token_ids"] else "length"
-            attack_stats = {"steps": processor.steps - before_stats[0],
-                "covered_steps": processor.covered_steps - before_stats[1],
-                "changed_logit_values": processor.changed - before_stats[2],
-                "absolute_adjustment_sum": processor.abs_sum - before_stats[3],
-                "logit_values": processor.value_count - before_stats[4],
-                "adjusted_steps": processor.adjusted_steps - before_stats[5]}
+            attack_stats = _expected_adjustment_stats(prefix, ids, mapping_stats, delta)
             record = _record(row, ids, tokenizer, settings, identity, finish_reason=reason,
                 stop_reason=ids[-1] if reason == "stop" else None, execution={"backend": "transformers.generate"})
             record["attack_diagnostics"] = attack_stats
@@ -642,24 +830,39 @@ def generate_attacks(cfg):
             done[row["prompt_id"]] = record
             if len(done) % 20 == 0:
                 print(f"delta={delta}: {len(done)}/{len(prompts)} responses", flush=True)
-        if len(done) != len(prompts):
+        if backend == "transformers" and len(done) != len(prompts):
             raise ValueError(f"delta={delta} generation journal incomplete")
-        step_count = sum(r.get("attack_diagnostics", {}).get("steps", 0) for r in done.values())
-        covered_count = sum(r.get("attack_diagnostics", {}).get("covered_steps", 0) for r in done.values())
-        changed_values = sum(r.get("attack_diagnostics", {}).get("changed_logit_values", 0) for r in done.values())
-        adjustment_sum = sum(r.get("attack_diagnostics", {}).get("absolute_adjustment_sum", 0) for r in done.values())
-        value_count = sum(r.get("attack_diagnostics", {}).get("logit_values", 0) for r in done.values())
-        adjusted_steps = sum(r.get("attack_diagnostics", {}).get("adjusted_steps", 0) for r in done.values())
-        if not step_count or not changed_values:
+        prompt_by_id = {row["prompt_id"]: row for row in prompts}
+        normalized_diagnostics = []
+        for record in done.values():
+            attack_diagnostics = record.get("attack_diagnostics", {})
+            if "expected_nonzero_adjustment_values" not in attack_diagnostics:
+                prompt_row = prompt_by_id[record["prompt_id"]]
+                attack_diagnostics = _expected_adjustment_stats(
+                    _prompt_ids(tokenizer, prompt_row["prompt"]),
+                    record.get("generated_token_ids", []), mapping_stats, delta)
+            normalized_diagnostics.append(attack_diagnostics)
+        step_count = sum(row.get("steps", 0) for row in normalized_diagnostics)
+        covered_count = sum(row.get("covered_steps", 0) for row in normalized_diagnostics)
+        expected_values = sum(row.get("expected_nonzero_adjustment_values", 0)
+                              for row in normalized_diagnostics)
+        adjustment_sum = sum(row.get("expected_absolute_adjustment_sum", 0.0)
+                             for row in normalized_diagnostics)
+        value_count = sum(row.get("expected_adjustment_values", 0)
+                          for row in normalized_diagnostics)
+        adjusted_steps = sum(row.get("expected_adjusted_steps", 0)
+                             for row in normalized_diagnostics)
+        if not step_count or not expected_values:
             raise RuntimeError(f"delta={delta} produced no measured logit adjustment; check mapping/processor")
         atomic_json(out / "diagnostics.json", {"delta": delta, "generation_steps": step_count,
             "covered_steps": covered_count,
             "covered_step_fraction": covered_count / max(step_count, 1),
             "adjusted_step_fraction": adjusted_steps / max(step_count, 1),
-            "mean_absolute_logit_adjustment": adjustment_sum / max(value_count, 1),
-            "nonzero_logit_value_fraction": changed_values / max(value_count, 1),
-            "nonzero_adjustment_values": changed_values,
-            "mapping_preceding_tokens": len(mapping), "backend": "transformers.generate",
+            "mean_expected_absolute_logit_adjustment": adjustment_sum / max(value_count, 1),
+            "expected_nonzero_adjustment_value_fraction": expected_values / max(value_count, 1),
+            "expected_nonzero_adjustment_values": expected_values,
+            "observed_floating_point_changes_measured": False,
+            "mapping_preceding_tokens": len(mapping_cpu), "backend": f"{backend}.generate",
             "e3_reference_backend": state["cfg"].generation_backend,
             "sampling_parity_claim": False})
 
@@ -671,9 +874,10 @@ def verify_attacks(cfg):
     state = _e3_state(cfg)
     phase, baseline, groups, source = load_observations(state, 1024)
     root = cfg["paths"]["output"]
+    generation_root = _generation_root(cfg)
     all_conditions = {"baseline": baseline["student"]}
     for delta in cfg["experiment"]["deltas"]:
-        rows = _jsonl(root / f"generation/delta_{delta}/responses.jsonl")
+        rows = _jsonl(generation_root / f"delta_{delta}/responses.jsonl")
         if [r["prompt_id"] for r in rows] != source["ids"]:
             raise ValueError(f"delta={delta} responses do not exactly match frozen E3 prompt ordering")
         condition = dict(phase, out=root / f"verification/delta_{delta}",
@@ -694,7 +898,7 @@ def verify_attacks(cfg):
         "reused_e3_full": True})
     utilities = generation_utility(all_conditions, 1024)
     for delta in cfg["experiment"]["deltas"]:
-        atomic_json(root / f"generation/delta_{delta}/utility.json", utilities[f"delta_{delta}"])
+        atomic_json(generation_root / f"delta_{delta}/utility.json", utilities[f"delta_{delta}"])
 
 
 def arc_utility(cfg):
@@ -777,6 +981,7 @@ def arc_utility(cfg):
 
 def report(cfg):
     root = cfg["paths"]["output"]
+    generation_root = _generation_root(cfg)
     report_dir = root / "reports"
     report_dir.mkdir(parents=True, exist_ok=True)
     baseline = json.loads((root / "verification/baseline/summary.json").read_text(encoding="utf-8"))
@@ -793,7 +998,7 @@ def report(cfg):
                     lambda data, d=None: next((x["wrong_mean"] for x in data if x["Q"] == 100 and x["alpha"] == .01), None)))
     e3_phase = _e3_state(cfg)
     e3_summary = json.loads((e3_phase["out"] / "eval1024/utility/generation_summary.json").read_text(encoding="utf-8"))
-    utilities = {d: json.loads((root / f"generation/delta_{d}/utility.json").read_text(encoding="utf-8")) for d in deltas}
+    utilities = {d: json.loads((generation_root / f"delta_{d}/utility.json").read_text(encoding="utf-8")) for d in deltas}
     metrics.append(("ARC-C accuracy (%)", lambda data: None, lambda data: None))
     metrics.append(("Mean response length (words)", lambda data: e3_summary["student"]["mean_words"],
                     lambda data, d=None: utilities[d]["mean_words"]))
@@ -802,7 +1007,7 @@ def report(cfg):
     metrics.append(("Severe repetition rate (%)", lambda data: 100 * e3_summary["student"]["severe_repetition_rate"],
                     lambda data, d=None: 100 * utilities[d]["severe_repetition_rate"]))
     metrics.append(("Suppression coverage (%)", lambda data: None, lambda data, d=None: 100 * json.loads(
-        (root / f"generation/delta_{d}/diagnostics.json").read_text(encoding="utf-8"))["covered_step_fraction"]))
+        (generation_root / f"delta_{d}/diagnostics.json").read_text(encoding="utf-8"))["covered_step_fraction"]))
     arc = None
     try:
         arc = json.loads((root / "arc/results.json").read_text(encoding="utf-8"))
@@ -860,7 +1065,7 @@ def report(cfg):
                 item = next((x for x in result["results"] if x["Q"] == q and x["alpha"] == alpha), None)
                 row.append(f"{item['detections']}/{item['groups']} ({item['rate']:.3f})" if item else "n/a")
             cells.append(row)
-    diagnostics = {str(d): json.loads((root / f"generation/delta_{d}/diagnostics.json").read_text(encoding="utf-8"))
+    diagnostics = {str(d): json.loads((generation_root / f"delta_{d}/diagnostics.json").read_text(encoding="utf-8"))
                    for d in cfg["experiment"]["deltas"]}
     lines = ["# Experiment 4 — SaTML statistical bigram suppression", "",
         "Method: **SaTML statistical bigram suppression with reconstructed public calibration assets.** This is not an exact-data reproduction.", "",
@@ -881,9 +1086,9 @@ def report(cfg):
                  for name, value in q1000.items())
     lines += ["",
         "## ARC-Challenge", "", ("ARC results are present in `arc/results.csv`." if arc else "ARC utility was not run."), "",
-        "## Attack diagnostics", "", "| δ | Previous-token coverage | Nonzero adjusted steps | Nonzero logit values | Mean absolute logit change |",
+        "## Attack diagnostics", "", "| δ | Previous-token coverage | Expected adjusted steps | Expected nonzero mapped values | Mean expected absolute adjustment |",
         "|---:|---:|---:|---:|---:|"]
-    lines.extend(f"| {delta} | {value['covered_step_fraction']:.4f} | {value['adjusted_step_fraction']:.4f} | {value['nonzero_logit_value_fraction']:.6f} | {value['mean_absolute_logit_adjustment']:.8g} |"
+    lines.extend(f"| {delta} | {value['covered_step_fraction']:.4f} | {value['adjusted_step_fraction']:.4f} | {value['expected_nonzero_adjustment_value_fraction']:.6f} | {value['mean_expected_absolute_logit_adjustment']:.8g} |"
                  for delta, value in diagnostics.items())
     lines += ["", "Interpret retained TPR together with coverage before claiming robustness.", ""]
     (report_dir / "experiment4_report.md").write_text("\n".join(lines), encoding="utf-8")

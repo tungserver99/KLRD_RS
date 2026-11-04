@@ -91,17 +91,26 @@ def validate_output_vocab_sizes(attacked_vocab_size: int, calibration_vocab_size
             "tokenizer_token_count": len(token_ids), "max_token_id": max_token_id}
 
 
-def prefill_prefix_cache(model, prefix_ids: list[list[int]], device):
-    """Run equal-length prompt prefixes once and return reusable past-key-values."""
+def prefill_prefix_cache(model, prefix_ids: list[list[int]], device, pad_token_id: int = 0):
+    """Run variable-length prompt prefixes once with right padding and masks."""
     import torch
     if not prefix_ids or not prefix_ids[0]:
         raise ValueError("Prefix cache requires non-empty token prefixes")
-    prefix_length = len(prefix_ids[0])
-    if any(len(row) != prefix_length for row in prefix_ids):
-        raise ValueError("Prefix cache rows must have equal token lengths")
-    input_ids = torch.tensor(prefix_ids, dtype=torch.long, device=device)
+    lengths = torch.tensor([len(row) for row in prefix_ids], dtype=torch.long, device=device)
+    if torch.any(lengths <= 0):
+        raise ValueError("Prefix cache requires non-empty token prefixes")
+    width = int(lengths.max().item())
+    input_ids = torch.full((len(prefix_ids), width), int(pad_token_id),
+                           dtype=torch.long, device=device)
+    attention_mask = torch.zeros_like(input_ids)
+    for row_index, row in enumerate(prefix_ids):
+        input_ids[row_index, :len(row)] = torch.tensor(row, dtype=torch.long, device=device)
+        attention_mask[row_index, :len(row)] = 1
+    position_ids = attention_mask.cumsum(-1) - 1
+    position_ids.masked_fill_(attention_mask == 0, 0)
     with torch.inference_mode():
-        outputs = model(input_ids=input_ids, use_cache=True)
+        outputs = model(input_ids=input_ids, attention_mask=attention_mask,
+                        position_ids=position_ids, use_cache=True)
     cache = getattr(outputs, "past_key_values", None)
     if cache is None:
         raise RuntimeError("Model did not return past_key_values for prefix cache")
@@ -113,18 +122,31 @@ def prefill_prefix_cache(model, prefix_ids: list[list[int]], device):
         cache = tuple((layer.keys, layer.values) for layer in cache.layers)
     if not isinstance(cache, (tuple, list)) or not cache:
         raise TypeError(f"Unsupported past_key_values type: {type(cache).__name__}")
-    return tuple(tuple(layer) for layer in cache), prefix_length
+    return tuple(tuple(layer) for layer in cache), width
 
 
-def run_cached_next_token_logits(model, cache, prefix_length: int,
+def run_cached_next_token_logits(model, cache, prefix_length: int | list[int],
                                  suffix_ids: list[list[int]], pad_token_id: int,
                                  device):
-    """Return logits after each exact suffix using a reusable shared prefix cache."""
+    """Return final-token logits after exact suffixes using cached prefixes."""
     import torch
     if not suffix_ids or any(not row for row in suffix_ids):
         raise ValueError("Cached inference requires a non-empty suffix for every row")
-    if prefix_length <= 0:
+    if isinstance(prefix_length, int):
+        prefix_lengths = torch.full((len(suffix_ids),), prefix_length,
+                                    dtype=torch.long, device=device)
+        cache_width = prefix_length
+    else:
+        prefix_lengths = torch.tensor(prefix_length, dtype=torch.long, device=device)
+        cache_width = int(prefix_lengths.max().item())
+    if isinstance(cache, (tuple, list)) and cache and cache[0] and hasattr(cache[0][0], "shape"):
+        # Selected parity rows can come from a wider original prefill batch.
+        # The attention mask must match the physical sequence dimension in KV.
+        cache_width = int(cache[0][0].shape[-2])
+    if len(prefix_lengths) != len(suffix_ids) or torch.any(prefix_lengths <= 0):
         raise ValueError("Cached inference requires a positive prefix length")
+    if torch.any(prefix_lengths > cache_width):
+        raise ValueError("Cached prefix length exceeds the KV-cache sequence width")
     batch_size = len(suffix_ids)
     lengths = torch.tensor([len(row) for row in suffix_ids], dtype=torch.long, device=device)
     suffix_width = int(lengths.max().item())
@@ -134,10 +156,11 @@ def run_cached_next_token_logits(model, cache, prefix_length: int,
     for row_index, row in enumerate(suffix_ids):
         input_ids[row_index, :len(row)] = torch.tensor(row, dtype=torch.long, device=device)
         suffix_mask[row_index, :len(row)] = 1
-    prefix_mask = torch.ones((batch_size, int(prefix_length)), dtype=torch.long, device=device)
+    prefix_mask = torch.arange(cache_width, device=device).unsqueeze(0) < prefix_lengths.unsqueeze(1)
+    prefix_mask = prefix_mask.to(torch.long)
     attention_mask = torch.cat((prefix_mask, suffix_mask), dim=1)
-    position_ids = torch.arange(int(prefix_length), int(prefix_length) + suffix_width,
-                                dtype=torch.long, device=device).unsqueeze(0).expand(batch_size, -1)
+    suffix_position_ids = prefix_lengths.unsqueeze(1) + torch.arange(
+        suffix_width, dtype=torch.long, device=device).unsqueeze(0)
     # Transformers 5 removed legacy tuple cache inputs. Wrap the stored tensors
     # in the current Cache API, while retaining compatibility with v4 models.
     model_cache = cache
@@ -156,10 +179,18 @@ def run_cached_next_token_logits(model, cache, prefix_length: int,
             # Older model families accept the legacy tuple directly.
             model_cache = cache
     with torch.inference_mode():
-        outputs = model(input_ids=input_ids, attention_mask=attention_mask,
-            position_ids=position_ids, past_key_values=model_cache, use_cache=False)
+        backbone = getattr(model, "model", None)
+        if backbone is None:
+            backbone = getattr(model, "base_model", None)
+        lm_head = getattr(model, "lm_head", None)
+        if backbone is None or lm_head is None:
+            raise TypeError("Cached inference requires a causal LM with model backbone and lm_head")
+        outputs = backbone(input_ids=input_ids, attention_mask=attention_mask,
+            position_ids=suffix_position_ids, past_key_values=model_cache,
+            use_cache=False, return_dict=True)
     last_positions = lengths - 1
-    return outputs.logits[torch.arange(batch_size, device=device), last_positions, :]
+    last_hidden = outputs.last_hidden_state[torch.arange(batch_size, device=device), last_positions]
+    return lm_head(last_hidden)
 
 
 def split_cached_prefix(full_ids: list[int], prefix_ids: list[int]) -> list[int] | None:
@@ -195,27 +226,25 @@ def build_prefix_suffix_plan(tokenizer, contexts: list[str], words: list[str],
         raise ValueError("Prefix plan requires contexts and distinct seed words")
     bos = bos_token or ""
     context_prefix_candidates = []
+    suffix_ids_by_word = {word: [] for word in words}
     for context_index, context in enumerate(contexts):
         prompts = [calibration_prompt(bos, context, word) for word in words]
         token_rows = _encode_text_batch(tokenizer, prompts)
         if len(token_rows) != len(words):
             raise ValueError("Tokenizer returned a different number of prompt rows")
-        context_prefix_candidates.append(_longest_common_token_prefix(token_rows))
-        if (context_index + 1) % 8 == 0 or context_index + 1 == len(contexts):
-            print(f"Cache prefix scan: contexts {context_index + 1}/{len(contexts)}", flush=True)
-    prefix_length = min(map(len, context_prefix_candidates))
-    prefix_ids = [candidate[:prefix_length] for candidate in context_prefix_candidates]
-    suffix_ids_by_word = {word: [] for word in words}
-    for context_index, context in enumerate(contexts):
-        prompts = [calibration_prompt(bos, context, word) for word in words]
-        token_rows = _encode_text_batch(tokenizer, prompts)
-        prefix = prefix_ids[context_index]
+        prefix = _longest_common_token_prefix(token_rows)
+        context_prefix_candidates.append(prefix)
         for word, full_ids in zip(words, token_rows):
             suffix = split_cached_prefix(full_ids, prefix)
             if suffix is None:
                 raise ValueError(f"Prompt tokens do not share the scanned prefix at context {context_index}, word {word!r}")
             suffix_ids_by_word[word].append(suffix)
-    return {"prefix_ids": prefix_ids, "prefix_length": prefix_length,
+        if (context_index + 1) % 8 == 0 or context_index + 1 == len(contexts):
+            print(f"Cache prefix scan: contexts {context_index + 1}/{len(contexts)}", flush=True)
+    prefix_ids = context_prefix_candidates
+    prefix_lengths = [len(prefix) for prefix in prefix_ids]
+    return {"prefix_ids": prefix_ids, "prefix_lengths": prefix_lengths,
+            "prefix_length": max(prefix_lengths),
             "suffix_ids_by_word": suffix_ids_by_word}
 
 
@@ -280,16 +309,10 @@ class PrefixCacheInferenceAdapter:
             print(f"Prefix cache chunk {batch_index} missing for {side}; using full inference.",
                   flush=True)
             return self.fallback_inference(model, tokenizer, prompts, **kwargs)
-        prefix_rows = self.plan["prefix_ids"][start:end]
-        token_rows = _encode_text_batch(tokenizer, list(prompts))
-        suffixes = [split_cached_prefix(full_ids, prefix)
-                    for full_ids, prefix in zip(token_rows, prefix_rows)]
-        if len(suffixes) != len(prompts) or any(suffix is None for suffix in suffixes):
-            print(f"Prefix token IDs changed for {self.active_word!r}; using full inference.",
-                  flush=True)
-            return self.fallback_inference(model, tokenizer, prompts, **kwargs)
+        suffixes = self.plan["suffix_ids_by_word"][self.active_word][start:end]
+        prefix_lengths = self.plan["prefix_lengths"][start:end]
         logits = run_cached_next_token_logits(model, self.caches[side][batch_index],
-            self.plan["prefix_length"], suffixes, self.pad_token_id, self.device)
+            prefix_lengths, suffixes, self.pad_token_id, self.device)
         return {"scores": [logits]}
 
     def verify_parity(self, words: list[str], atol: float = 1e-4,
@@ -328,7 +351,8 @@ class PrefixCacheInferenceAdapter:
                     suffixes = [self.plan["suffix_ids_by_word"][word][index]
                                 for index in context_indices]
                     cached_logits = run_cached_next_token_logits(model,
-                        selected_caches[chunk_index], self.plan["prefix_length"],
+                        selected_caches[chunk_index],
+                        [self.plan["prefix_lengths"][index] for index in context_indices],
                         suffixes, self.pad_token_id, self.device)
                     prompts = [calibration_prompt(self.bos, self.contexts[index], word)
                                for index in context_indices]
