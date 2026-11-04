@@ -170,39 +170,37 @@ def test_bigram_adjustment_adapter_preserves_original_sparse_signed_math():
     assert torch.equal(actual, torch.tensor([0.0, 8.0, 11.0, 0.0]))
 
 
-def test_vllm_processor_uses_prompt_last_token_then_generated_history(monkeypatch, tmp_path):
-    import sys
+def test_vllm_processor_uses_mrv2_interface_and_current_input_token(tmp_path):
+    import pickle
     import types
-
-    class AdapterLogitsProcessor:
-        def __init__(self, vllm_config, device, is_pin_memory):
-            self.device = device
-
-    class SamplingParams:
-        pass
-
-    vllm = types.ModuleType("vllm")
-    vllm.SamplingParams = SamplingParams
-    vllm_v1 = types.ModuleType("vllm.v1")
-    vllm_sample = types.ModuleType("vllm.v1.sample")
-    vllm_lp = types.ModuleType("vllm.v1.sample.logits_processor")
-    vllm_lp.AdapterLogitsProcessor = AdapterLogitsProcessor
-    monkeypatch.setitem(sys.modules, "vllm", vllm)
-    monkeypatch.setitem(sys.modules, "vllm.v1", vllm_v1)
-    monkeypatch.setitem(sys.modules, "vllm.v1.sample", vllm_sample)
-    monkeypatch.setitem(sys.modules, "vllm.v1.sample.logits_processor", vllm_lp)
 
     mapping_path = tmp_path / "mapping.pt"
     torch.save({9: (torch.tensor([1]), torch.tensor([0.5])),
                 4: (torch.tensor([2]), torch.tensor([-0.25]))}, mapping_path)
-    processor_type = _make_vllm_suppression_processor(mapping_path)
-    processor = processor_type(None, torch.device("cpu"), False)
-    request = processor.new_req_logits_processor(types.SimpleNamespace(
-        extra_args={"delta": 2.0, "prompt_last_token_id": 9}))
-    first = request([], torch.tensor([0.0, 10.0, 10.0]))
-    second = request([4], torch.tensor([0.0, 10.0, 10.0]))
-    assert torch.equal(first, torch.tensor([0.0, 9.0, 10.0]))
-    assert torch.equal(second, torch.tensor([0.0, 10.0, 10.5]))
+    processor_type = _make_vllm_suppression_processor()
+    assert pickle.loads(pickle.dumps(processor_type)) is processor_type
+    class RequestStates:
+        device = torch.device("cpu")
+        max_num_reqs = 2
+        vocab_size = 3
+
+    processor = processor_type(None, RequestStates())
+    warmup_params = types.SimpleNamespace(extra_args=None)
+    assert processor.add_request(0, warmup_params) is False
+    first_params = types.SimpleNamespace(extra_args={
+        "delta": 2.0, "mapping_path": str(mapping_path)})
+    second_params = types.SimpleNamespace(extra_args={
+        "delta": 1.0, "mapping_path": str(mapping_path)})
+    assert processor.add_request(0, first_params)
+    assert processor.add_request(1, second_params)
+    context = types.SimpleNamespace(
+        idx_mapping_np=[0, 1],
+        input_ids=torch.tensor([9, 4]),
+    )
+    logits = processor.apply(torch.tensor([[0.0, 10.0, 10.0],
+                                           [0.0, 10.0, 10.0]]), context)
+    assert torch.equal(logits, torch.tensor([[0.0, 9.0, 10.0],
+                                             [0.0, 10.0, 10.25]]))
 
 
 def test_cached_next_token_logits_match_full_prompt_with_variable_suffix_lengths():

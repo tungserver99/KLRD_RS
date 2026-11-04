@@ -606,46 +606,81 @@ def _apply_bigram_adjustment(scores, previous_token_id, mapping, delta):
     return scores
 
 
-def _make_vllm_suppression_processor(mapping_path):
-    """Build the vLLM 0.33 adapter for the request-level bigram adjustment."""
-    import torch
-    from vllm import SamplingParams
-    from vllm.v1.sample.logits_processor import AdapterLogitsProcessor
+try:
+    from vllm.v1.worker.gpu.sample.logits_processor import LogitsProcessor as _VllmLogitsProcessorBase
+except ImportError:
+    class _VllmLogitsProcessorBase:
+        """Import-time placeholder so non-vLLM stages remain usable."""
 
-    class _RequestSuppression:
-        def __init__(self, mapping, delta, prompt_last_token_id):
-            self.mapping = mapping
-            self.delta = float(delta)
-            self.prompt_last_token_id = int(prompt_last_token_id)
 
-        def __call__(self, output_ids, logits):
-            previous = output_ids[-1] if output_ids else self.prompt_last_token_id
-            return _apply_bigram_adjustment(logits, previous, self.mapping, self.delta)
+class SaTMLVllmLogitsProcessor(_VllmLogitsProcessorBase):
+    """Pickleable vLLM 0.33 Model Runner V2 bigram logits processor."""
 
-    class SaTMLVllmLogitsProcessor(AdapterLogitsProcessor):
-        @classmethod
-        def validate_params(cls, params):
-            extra = params.extra_args or {}
-            if not isinstance(extra.get("prompt_last_token_id"), int):
-                raise ValueError("SaTML requires prompt_last_token_id in vLLM extra_args")
-            if not isinstance(extra.get("delta"), (int, float)):
-                raise ValueError("SaTML requires numeric delta in vLLM extra_args")
+    @classmethod
+    def validate_params(cls, params):
+        extra = params.extra_args or {}
+        has_delta = "delta" in extra
+        has_mapping_path = "mapping_path" in extra
+        if not has_delta and not has_mapping_path:
+            return
+        delta = extra.get("delta")
+        mapping_path = extra.get("mapping_path")
+        if isinstance(delta, bool) or not isinstance(delta, (int, float)):
+            raise ValueError("SaTML requires numeric delta in vLLM extra_args")
+        if not isinstance(mapping_path, str) or not mapping_path:
+            raise ValueError("SaTML requires mapping_path in vLLM extra_args")
 
-        def __init__(self, vllm_config, device, is_pin_memory):
-            super().__init__(vllm_config, device, is_pin_memory)
+    def __init__(self, vllm_config, req_states):
+        if getattr(vllm_config, "speculative_config", None) is not None:
+            raise ValueError("SaTML vLLM logits processor does not support speculative decoding")
+        self.device = req_states.device
+        self.deltas = [0.0] * req_states.max_num_reqs
+        self.mapping_path = None
+        self.mapping = None
+
+    def add_request(self, req_idx, sampling_params):
+        self.deltas[req_idx] = 0.0
+        extra = sampling_params.extra_args or {}
+        if "delta" not in extra and "mapping_path" not in extra:
+            return False
+        self.validate_params(sampling_params)
+        mapping_path = extra["mapping_path"]
+        if self.mapping is None:
+            import torch
             print("E4 vLLM processor: loading sparse suppression mapping on GPU.", flush=True)
             cpu_mapping = torch.load(mapping_path, map_location="cpu", weights_only=True)
-            self.mapping = {int(key): (token_ids.to(device), weights.to(device))
-                            for key, (token_ids, weights) in cpu_mapping.items()}
+            self.mapping = {
+                int(key): (token_ids.to(self.device), weights.to(self.device))
+                for key, (token_ids, weights) in cpu_mapping.items()
+            }
+            self.mapping_path = mapping_path
             del cpu_mapping
             print(f"E4 vLLM processor: {len(self.mapping)} preceding-token rows ready.", flush=True)
+        elif mapping_path != self.mapping_path:
+            raise ValueError("SaTML vLLM engine cannot mix suppression mapping files")
+        self.deltas[req_idx] = float(extra["delta"])
+        return True
 
-        def new_req_logits_processor(self, params):
-            extra = params.extra_args or {}
-            self.validate_params(params)
-            return _RequestSuppression(self.mapping, extra["delta"],
-                                       extra["prompt_last_token_id"])
+    def is_argmax_invariant(self):
+        return False
 
+    def apply(self, logits, ctx):
+        request_slots = ctx.idx_mapping_np
+        input_ids = ctx.input_ids.tolist()
+        if len(request_slots) != logits.shape[0] or len(input_ids) != logits.shape[0]:
+            raise RuntimeError(
+                "SaTML vLLM logits processor expects one logits row per request; "
+                "speculative decoding must remain disabled")
+        for row, (request_slot, previous_token_id) in enumerate(
+                zip(request_slots, input_ids)):
+            delta = self.deltas[int(request_slot)]
+            if delta:
+                _apply_bigram_adjustment(
+                    logits[row], previous_token_id, self.mapping, delta)
+        return logits
+
+
+def _make_vllm_suppression_processor():
     return SaTMLVllmLogitsProcessor
 
 
@@ -720,7 +755,7 @@ def generate_attacks(cfg):
         engine_settings = {"model": str(checkpoint), "revision": None,
             "tokenizer": str(checkpoint), "tokenizer_revision": None, "dtype": "float32"}
         engine_options = _vllm_options(engine_settings, execution)
-        logits_processor = _make_vllm_suppression_processor(mapping_path)
+        logits_processor = _make_vllm_suppression_processor()
         print(f"E4 vLLM: loading model and suppression processor; "
               f"queue={execution['request_batch_size']}, max concurrent={execution['max_num_seqs']}.",
               flush=True)
@@ -762,7 +797,7 @@ def generate_attacks(cfg):
                     stop_token_ids=settings["eos_token_ids"], detokenize=True,
                     skip_special_tokens=True, repetition_penalty=1.0,
                     presence_penalty=0.0, frequency_penalty=0.0,
-                    extra_args={"delta": delta, "prompt_last_token_id": int(prefix[-1])})
+                    extra_args={"delta": delta, "mapping_path": str(mapping_path)})
                     for row, prefix in zip(batch, prefixes)]
                 batch_number = start // batch_size + 1
                 print(f"E4 vLLM delta={delta}: batch {batch_number} START "
