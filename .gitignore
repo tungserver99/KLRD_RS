@@ -56,3 +56,9 @@ venv/
 .agents/
 Thumbs.db
 .DS_Store
+
+# E2B generated paraphrases, private pairs, API receipts and score caches
+experiment2_paraphrase/
+
+experiment3_rs/
+experiment3_full/

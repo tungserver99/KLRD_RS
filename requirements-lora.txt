@@ -1,0 +1,9 @@
+# Install once on the GPU server; never from run_experiment3.sh.
+-r requirements.txt
+peft>=0.14,<1
+accelerate>=1.2,<2
+safetensors>=0.4
+# Only --mode paraphrase needs this exact historical SDK.
+openai==2.54.0
+# New CLI runs use vLLM for inference only; retain the existing E2 server 0.32 build.
+# Explicit --generation-backend hf remains available; the launcher never installs packages.

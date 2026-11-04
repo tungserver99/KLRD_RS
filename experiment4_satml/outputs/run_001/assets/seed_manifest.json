@@ -1,0 +1,13 @@
+{
+  "seed_url": "https://raw.githubusercontent.com/first20hours/google-10000-english/master/google-10000-english.txt",
+  "source_revision": "google-10000-english/master",
+  "source_sha256": "9c965d384526facc59260e94f8ccff1582633fa385004abe1455ed457062acbc",
+  "source_rows_retained": 6000,
+  "source_rows_considered": 6000,
+  "tokenizer": "/content/drive/Othercomputers/My Computer/Google Drive Offline/PHD/LLM_fingerprint/KLRD_RS/experiment3_full/run_001/merged_student",
+  "tokenizer_revision": "aa8e72537993ba99e69dfaafa59ed015b17504d1",
+  "valid_single_token_words": 5506,
+  "tokenization": "tokenizer.encode(' ' + word, add_special_tokens=False)",
+  "calibration_contexts": 128,
+  "calibration_context_policy": "fixed KLRD-RS E4 design; not a paper reproduction"
+}

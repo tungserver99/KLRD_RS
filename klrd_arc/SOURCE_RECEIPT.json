@@ -1,0 +1,19 @@
+{
+  "source_project": "../KLRD",
+  "copy_policy": "Direct byte copies; copied Python source must not be edited",
+  "files": {
+    "evaluate.py": "f5662e30593fbfaf9e7f4a2aba549d4afe49851540478aafe71652609f98c46a",
+    "model.py": "786dbb44f2f3aceeae9e2208ea0a3d7cc99ae159a3a25533bafa8d7ea8ba3aea",
+    "data.py": "24ab4603b1c8200a5bd419eb08079965093571ca5450d73279edd8425de9527b",
+    "artifacts.py": "31f4a3f294e31d13685718b59884d7d2cd3b7d7ccfe258a933f5505afef0f583"
+  },
+  "historical_manifest_evidence": [
+    "../KLRD/outputs/klrd/private/manifest.json",
+    "../KLRD/outputs/klrd_vllm/private/manifest.json"
+  ],
+  "historical_lm_eval": "0.4.13",
+  "historical_data_seed": 20261021,
+  "historical_model_dtype": "bfloat16",
+  "historical_dataset_commit": null,
+  "historical_dataset_commit_limitation": "Original evaluator did not explicitly pin a dataset revision. No original dataset commit is inferred."
+}

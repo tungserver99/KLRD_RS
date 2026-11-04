@@ -1,0 +1,10 @@
+# Preserve the audited original SCW bytes across Windows/Linux checkouts.
+klrd_scw/*.py -text
+docs/superpowers/references/scw_15bc1929569357130f2dbc0b09f91bbf4f4bd947/** -text
+run_experiment2_paraphrase.sh text eol=lf
+
+run_experiment3.sh text eol=lf
+run_experiment3_pilot.sh text eol=lf
+run_experiment3_full.pbs text eol=lf
+# Original ARC sources must retain the bytes recorded by SOURCE_RECEIPT.json.
+klrd_arc/*.py -text

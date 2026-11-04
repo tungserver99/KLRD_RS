@@ -1,0 +1,7 @@
+# Install on the GPU server only. Launchers never install or upgrade packages.
+-r requirements-lora.txt
+# Recovered from both original KLRD runtime manifests; preserve ARC task semantics.
+lm_eval==0.4.13
+sentencepiece>=0.2
+# Retain the working server Torch/Transformers/vLLM stack.
+# Exact-teacher integration supports vLLM 0.32.0 and 0.33.0.

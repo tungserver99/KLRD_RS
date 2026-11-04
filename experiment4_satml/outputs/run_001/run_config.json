@@ -1,0 +1,50 @@
+{
+  "config": {
+    "paths": {
+      "e3_full_output": "/content/drive/Othercomputers/My Computer/Google Drive Offline/PHD/LLM_fingerprint/KLRD_RS/experiment3_full/run_001",
+      "e3_pilot_output": "/content/drive/Othercomputers/My Computer/Google Drive Offline/PHD/LLM_fingerprint/KLRD_RS/experiment3_rs/run_001",
+      "seed_source": "/content/drive/Othercomputers/My Computer/Google Drive Offline/PHD/LLM_fingerprint/KLRD_RS/experiment4_satml/assets/google-10000-english.txt",
+      "output": "/content/drive/Othercomputers/My Computer/Google Drive Offline/PHD/LLM_fingerprint/KLRD_RS/experiment4_satml/outputs/run_001"
+    },
+    "models": {
+      "calibration_model": "Qwen/Qwen2.5-1.5B",
+      "calibration_revision": "main"
+    },
+    "experiment": {
+      "seed": 42,
+      "seed_words": 6000,
+      "calibration_texts": 128,
+      "calibration_new_tokens": 128,
+      "calibration_batch_size": 128,
+      "probability_threshold": 0.0001,
+      "clip_quantile": 0.999,
+      "deltas": [
+        2,
+        4,
+        8,
+        12
+      ],
+      "max_new_tokens": 1024,
+      "verification_alphas": [
+        0.01,
+        0.0001
+      ],
+      "group_sizes": [
+        20,
+        50,
+        100,
+        1000
+      ],
+      "wrong_keys": 20,
+      "arc_examples": 1172
+    }
+  },
+  "scientific_config_sha256": "3f5a449e7e9b995bf34ea8e2b9912778acff1f94f60f419244e73eaeb5cc527a",
+  "calibration_batch_sizes_used": [
+    8,
+    16,
+    64,
+    128
+  ],
+  "batch_size_change_policy": "Allowed between mapping resumes; batching does not change score aggregation"
+}

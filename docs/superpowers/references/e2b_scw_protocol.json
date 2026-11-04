@@ -1,0 +1,182 @@
+{
+  "source_repository": "sibling KLRD supplied by user",
+  "historical_run": "outputs/klrd_vllm/paraphrase_scw_table2_v1",
+  "historical_manifest_sha256": "9e522f28d26a1266802e23ae36c0de13a39233ac68c72c11c6daf81af11397c2",
+  "historical_api_manifest_sha256": "fc6b8e126ccd855c17b0cca03c8a4ce872636c4c44fb8f017bc4425aadeef658",
+  "scw_commit": "15bc1929569357130f2dbc0b09f91bbf4f4bd947",
+  "model": "gpt-5-mini-2025-08-07",
+  "prompt": "Please rewrite the following text and return only the rewritten text: ",
+  "request_fields": [
+    "model",
+    "input"
+  ],
+  "sdk_version": "2.54.0",
+  "workers": 128,
+  "max_attempts": 5,
+  "sdk_retries": 0,
+  "timeout_seconds": 180,
+  "retry_backoff_seconds": [
+    1,
+    2,
+    4,
+    8
+  ],
+  "preprocessing": "No trimming, segmentation or input length clipping. Prefix concatenated verbatim with full response.",
+  "postprocessing": "response.output_text verbatim; strip only to reject empty text; no output cleanup or length clipping.",
+  "model_access": "Not tested locally; unavailable model/auth/quota stops without fallback.",
+  "copied_files": [
+    {
+      "original": "klrd/scw_paraphrase.py",
+      "modifications": "none; byte-for-byte copy",
+      "sha256": "ba7c14c372fe4f3f48367e94c9e44a9ba903cc9b269e24a9cd07c98c4568a45e",
+      "copy": "klrd_scw/scw_paraphrase.py"
+    },
+    {
+      "original": "klrd/artifacts.py",
+      "modifications": "none; byte-for-byte copy",
+      "sha256": "31f4a3f294e31d13685718b59884d7d2cd3b7d7ccfe258a933f5505afef0f583",
+      "copy": "klrd_scw/artifacts.py"
+    },
+    {
+      "original": "klrd/paraphrase_report.py",
+      "modifications": "none; byte-for-byte copy",
+      "sha256": "e08347cfcfb0dc55cbb39d6aca32505214ba89464a9301926696b2b7dc934f5b",
+      "copy": "klrd_scw/paraphrase_report.py"
+    },
+    {
+      "original": "docs/superpowers/references/scw_15bc1929569357130f2dbc0b09f91bbf4f4bd947/LICENSE_CODE",
+      "modifications": "none; byte-for-byte copy",
+      "sha256": "3e961fd80088424f77389e8cc76a35e2d48e28ba045c1467b2895511dcae5a0b",
+      "copy": "docs/superpowers/references/scw_15bc1929569357130f2dbc0b09f91bbf4f4bd947/LICENSE_CODE"
+    },
+    {
+      "original": "docs/superpowers/references/scw_15bc1929569357130f2dbc0b09f91bbf4f4bd947/src/robust_fp/eval/paraphrasers.py",
+      "modifications": "none; byte-for-byte copy",
+      "sha256": "ada49be972837401b3943d3406aa48a39655f3011839d51c73741496c4491957",
+      "copy": "docs/superpowers/references/scw_15bc1929569357130f2dbc0b09f91bbf4f4bd947/src/robust_fp/eval/paraphrasers.py"
+    },
+    {
+      "original": "docs/superpowers/references/scw_15bc1929569357130f2dbc0b09f91bbf4f4bd947/scripts/eval_fingerprints.py",
+      "modifications": "none; byte-for-byte copy",
+      "sha256": "176253907751e56d1b0c01943bcc66ef26d7e51a32be805ce9adcecc545bfa0c",
+      "copy": "docs/superpowers/references/scw_15bc1929569357130f2dbc0b09f91bbf4f4bd947/scripts/eval_fingerprints.py"
+    },
+    {
+      "original": "docs/superpowers/references/scw_15bc1929569357130f2dbc0b09f91bbf4f4bd947/scripts/ablate_eval_fingerprints.sh.txt",
+      "modifications": "none; byte-for-byte copy",
+      "sha256": "97bda06866b9ebf19f6572d4cad7f5bbf4eace1e9de7ac667b9157fa15769bd2",
+      "copy": "docs/superpowers/references/scw_15bc1929569357130f2dbc0b09f91bbf4f4bd947/scripts/ablate_eval_fingerprints.sh.txt"
+    }
+  ],
+  "historical_source_link": {
+    "manifest_field": "analysis_code_sha256",
+    "hash_rule": "SHA256(concatenation of sorted klrd/*.py bytes)",
+    "historical_sha256": "19c18f8fbaa8726888c79654e3ea8e7a15c833e00ba8b7fa6cdb09041110ba9f",
+    "verified_current_original_sha256": "19c18f8fbaa8726888c79654e3ea8e7a15c833e00ba8b7fa6cdb09041110ba9f",
+    "verified_equal": true,
+    "files": [
+      {
+        "sha256": "ff0ad0393b030385bffad05df7cd5ecc478e906fddd5d9aba884cfb229d18f0a",
+        "file": "klrd/__init__.py"
+      },
+      {
+        "sha256": "e2274ee94d03cbe800330a7e89ecb2894deb032f30ebb95a1d999236f384441b",
+        "file": "klrd/__main__.py"
+      },
+      {
+        "sha256": "31f4a3f294e31d13685718b59884d7d2cd3b7d7ccfe258a933f5505afef0f583",
+        "file": "klrd/artifacts.py"
+      },
+      {
+        "sha256": "9b4b49d95c32c6e17884bf66780f445db096ca36cf0a95ebbce337f66c673ace",
+        "file": "klrd/calibration.py"
+      },
+      {
+        "sha256": "d5ffabba390c6ca55ec6820aaa123b077b3182b8e290dab48b01c2a368378ef2",
+        "file": "klrd/config.py"
+      },
+      {
+        "sha256": "24ab4603b1c8200a5bd419eb08079965093571ca5450d73279edd8425de9527b",
+        "file": "klrd/data.py"
+      },
+      {
+        "sha256": "7e13f15b80b988dda655a201d66e09037d3a1436dd74d542ef59fc73fe978967",
+        "file": "klrd/diagnostics.py"
+      },
+      {
+        "sha256": "f5662e30593fbfaf9e7f4a2aba549d4afe49851540478aafe71652609f98c46a",
+        "file": "klrd/evaluate.py"
+      },
+      {
+        "sha256": "a9439824efa3d0f2b32791adb15598ac403b11f5950601794a4f37e5d120f613",
+        "file": "klrd/export.py"
+      },
+      {
+        "sha256": "cee2c5676fc474a52df6dd4bc6f058a1f932f5412206767291d25af18f9af100",
+        "file": "klrd/followup.py"
+      },
+      {
+        "sha256": "94c1a358a992ad3ac6434489055e54fffa4e640c5c6494d3ec52706bb034126e",
+        "file": "klrd/followup_worker.py"
+      },
+      {
+        "sha256": "32d956bb6c32001bdc9ace3f4ff90dd7479a4e318068d8fe3cd6c1d54d90b7c3",
+        "file": "klrd/generation.py"
+      },
+      {
+        "sha256": "786dbb44f2f3aceeae9e2208ea0a3d7cc99ae159a3a25533bafa8d7ea8ba3aea",
+        "file": "klrd/model.py"
+      },
+      {
+        "sha256": "7df9e6d57ddcebbcdf96905b6a22a6fc7e4a9c7a54d8ab0fcc1ceaaa3e40986c",
+        "file": "klrd/paraphrase.py"
+      },
+      {
+        "sha256": "7382cfb928bbcfd432263ad418e58d424009c44ec8cc32f9ccc57b48fbcc5ba0",
+        "file": "klrd/paraphrase_metrics.py"
+      },
+      {
+        "sha256": "e08347cfcfb0dc55cbb39d6aca32505214ba89464a9301926696b2b7dc934f5b",
+        "file": "klrd/paraphrase_report.py"
+      },
+      {
+        "sha256": "b044cef88b8f0e9daf984ded6c4c3913250e1eead4771b6c6d259f63e3f56502",
+        "file": "klrd/pipeline.py"
+      },
+      {
+        "sha256": "52c70baf9ac2327ed88c58d0778202e83ee6d0bc78dfae716dad1b3626eb1c8e",
+        "file": "klrd/raw_llr.py"
+      },
+      {
+        "sha256": "4819c1c95bf8b17b8bd93e799c1d99c804b1f70e7232a4cce152a6924cdbfbe1",
+        "file": "klrd/rotation.py"
+      },
+      {
+        "sha256": "96d1bd183fa1bf5f8904d639f056cee4b7f3a48429f5a5b946fdd8e4e44fd7a7",
+        "file": "klrd/run_identity.py"
+      },
+      {
+        "sha256": "ba7c14c372fe4f3f48367e94c9e44a9ba903cc9b269e24a9cd07c98c4568a45e",
+        "file": "klrd/scw_paraphrase.py"
+      },
+      {
+        "sha256": "974f36a217afe18fae61c6a533553e2de9b0f7397be496dbeed5735303335895",
+        "file": "klrd/train.py"
+      },
+      {
+        "sha256": "878bb6a6360bc70a1a9a848133e11dff32f78a1ff4d18d2a05666e5a20662276",
+        "file": "klrd/verify.py"
+      },
+      {
+        "sha256": "c256b3703e60cc2f768092a746167550edb7c833c1546c00c70365a445d6b67a",
+        "file": "klrd/vllm_backend.py"
+      },
+      {
+        "sha256": "1e1745744d3a4a18df8e7dba6b3731f195279a2bb9969cd0e80dfb4e91479590",
+        "file": "klrd/vllm_worker.py"
+      }
+    ],
+    "historical_zip_contains_transport_source": false
+  },
+  "historical_defaults_limit": "Only model and input were explicitly sent. Exact backend-resolved defaults for omitted generation parameters were not persisted and are not reconstructed or claimed equivalent."
+}

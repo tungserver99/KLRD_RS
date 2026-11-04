@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+#PBS -N klrd_rs_e3_full
+#PBS -l select=1:ncpus=8:mem=64gb:ngpus=1
+#PBS -l walltime=24:00:00
+# Site-specific queue/account/GPU resource names must be set for your cluster.
+# Example submission (server only): qsub -v E3_PHASE=train run_experiment3_full.pbs
+set -euo pipefail
+cd -- "${PBS_O_WORKDIR:?Submit from the project directory}"
+export PYTHONUNBUFFERED=1
+output="${KLRD_RS_FULL_OUTPUT:-experiment3_full/run_001}"
+case "${E3_PHASE:?Choose train, eval512, eval1024, arc-c, paraphrase or report}" in
+  train) python main_exp3_full.py --mode train --output "$output" ;;
+  eval512) python main_exp3_full.py --mode evaluate --max-new-tokens 512 --output "$output" ;;
+  eval1024) python main_exp3_full.py --mode evaluate --max-new-tokens 1024 --output "$output" ;;
+  arc-c) python main_exp3_full.py --mode arc-c --output "$output" ;;
+  paraphrase) python main_exp3_full.py --mode paraphrase --max-new-tokens 1024 --output "$output" ;;
+  report) python main_exp3_full.py --mode report --output "$output" ;;
+  *) echo "Unknown E3_PHASE: $E3_PHASE" >&2; exit 2 ;;
+esac

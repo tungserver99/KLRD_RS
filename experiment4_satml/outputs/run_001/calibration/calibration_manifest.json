@@ -1,0 +1,85 @@
+{
+  "count": 128,
+  "seed": 42,
+  "generation": {
+    "do_sample": true,
+    "temperature": 0.8,
+    "top_p": 0.95,
+    "max_new_tokens": 128
+  },
+  "checkpoint": "/content/drive/Othercomputers/My Computer/Google Drive Offline/PHD/LLM_fingerprint/KLRD_RS/experiment3_full/run_001/merged_student",
+  "checkpoint_identity": "d62f8e6c907e2aa47691c60d934afb302269fd8c4b191b75401548b51dd6b34e",
+  "attacked_model_revision": "aa8e72537993ba99e69dfaafa59ed015b17504d1",
+  "tokenizer_revisions": {
+    "attacked": null,
+    "calibration": null
+  },
+  "tokenizer_compatibility": {
+    "vocab_size": 151665,
+    "vocabulary_sha256": "698c955b0b438a535083d1771ef8b41069afba4b3d51a482558bdb68ea55e800",
+    "special_token_metadata_match": false,
+    "special_tokens": {
+      "eos_token": "<|im_end|>",
+      "pad_token": "<|endoftext|>"
+    },
+    "all_special_ids": [
+      151643,
+      151644,
+      151645,
+      151646,
+      151647,
+      151648,
+      151649,
+      151650,
+      151651,
+      151652,
+      151653,
+      151654,
+      151655,
+      151656
+    ],
+    "attacked_special_tokens": {
+      "eos_token": "<|im_end|>",
+      "pad_token": "<|endoftext|>"
+    },
+    "calibration_special_tokens": {
+      "eos_token": "<|endoftext|>",
+      "pad_token": "<|endoftext|>"
+    },
+    "attacked_all_special_ids": [
+      151643,
+      151644,
+      151645,
+      151646,
+      151647,
+      151648,
+      151649,
+      151650,
+      151651,
+      151652,
+      151653,
+      151654,
+      151655,
+      151656
+    ],
+    "calibration_all_special_ids": [
+      151643,
+      151644,
+      151645,
+      151646,
+      151647,
+      151648,
+      151649,
+      151650,
+      151651,
+      151652,
+      151653,
+      151654,
+      151655,
+      151656
+    ],
+    "attacked_tokenizer_revision": null,
+    "calibration_tokenizer_revision": null
+  },
+  "calibration_texts_sha256": "9855bc9d1f644d21304f50d52370b68f5ff4b14cedb833c72060189c1ff028d8"
+}
