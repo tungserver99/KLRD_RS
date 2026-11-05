@@ -1,0 +1,17 @@
+metric,no_attack,delta_2,delta_4,delta_8,delta_12,clean_control
+TPR Q20 alpha=0.01,1.0,1.0,0.92,0.0,0.0,
+TPR Q20 alpha=0.0001,1.0,0.96,0.08,0.0,0.0,
+TPR Q50 alpha=0.01,1.0,1.0,1.0,0.0,0.0,
+TPR Q50 alpha=0.0001,1.0,1.0,0.15,0.0,0.0,
+TPR Q100 alpha=0.01,1.0,1.0,1.0,0.0,0.0,
+TPR Q100 alpha=0.0001,1.0,1.0,0.1,0.0,0.0,
+Wrong-key acceptance mean,0.0,0.0,0.0,0.0,0.0,
+ARC-C accuracy (%),43.68600682593857,44.36860068259386,43.77133105802048,42.491467576791806,41.467576791808874,43.68600682593857
+Mean response length (words),486.29,497.681,511.789,568.856,687.339,
+Truncation rate (%),22.8,25.2,28.199999999999996,50.0,73.7,
+Severe repetition rate (%),0.1,0.2,0.3,20.4,65.7,
+Suppression coverage (%),,51.21544837653548,52.23403478540239,59.01743116820811,70.81270820077104,
+Clean acceptance Q100 alpha=0.01,0.0,,,,,
+Clean acceptance Q100 alpha=0.0001,0.0,,,,,
+ARC-C correct/total,512/1172,520/1172,513/1172,498/1172,486/1172,512/1172
+Mean generated tokens/response,656.451,668.601,684.77,750.38,854.944,

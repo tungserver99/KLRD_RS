@@ -38,6 +38,31 @@ def _generation_root(cfg):
     return cfg["paths"]["output"] / name
 
 
+def _bind_generation_identity(identity_path, journal, identity, done):
+    def scientific(value):
+        result = json.loads(json.dumps(value))
+        execution = result.get("execution")
+        if isinstance(execution, dict):
+            for key in list(execution):
+                if (key in {"request_batch_size", "max_num_seqs",
+                            "max_num_batched_tokens", "gpu_memory_utilization"}
+                        or key.startswith("cudagraph_")):
+                    execution.pop(key)
+        return result
+
+    if identity_path.exists():
+        previous = json.loads(identity_path.read_text(encoding="utf-8"))
+        if scientific(previous) != scientific(identity):
+            raise ValueError(
+                f"Refusing to resume {journal}: generation identity/configuration changed")
+        if done:
+            return previous
+    elif journal.exists():
+        raise ValueError(f"Refusing to resume unbound response journal: {journal}")
+    atomic_json(identity_path, identity)
+    return identity
+
+
 def _e3_state(cfg):
     from klrd_rs.e3full.common import initialize
     return initialize(cfg["root"], cfg["paths"]["e3_full_output"],
@@ -684,6 +709,34 @@ def _make_vllm_suppression_processor():
     return SaTMLVllmLogitsProcessor
 
 
+def _e4_vllm_execution(environ=None):
+    """Read E4-specific safe vLLM defaults with the shared KLRD env overrides."""
+    environ = os.environ if environ is None else environ
+    values = {}
+    for field, default in (("request_batch_size", 16), ("max_num_seqs", 8),
+                           ("max_num_batched_tokens", 2048)):
+        name = f"KLRD_RS_VLLM_{field.upper()}"
+        try:
+            value = int(environ.get(name, str(default)))
+        except ValueError:
+            raise ValueError(f"{name} must be a positive integer") from None
+        if value < 1:
+            raise ValueError(f"{name} must be a positive integer")
+        values[field] = value
+    name = "KLRD_RS_VLLM_GPU_MEMORY_UTILIZATION"
+    try:
+        memory = float(environ.get(name, "0.70"))
+    except ValueError:
+        raise ValueError(f"{name} must be a finite fraction between zero and one") from None
+    if not math.isfinite(memory) or not 0 < memory < 1:
+        raise ValueError(f"{name} must be a finite fraction between zero and one")
+    values["gpu_memory_utilization"] = memory
+    values["max_num_seqs"] = min(values["max_num_seqs"], values["request_batch_size"])
+    if values["max_num_batched_tokens"] < values["max_num_seqs"]:
+        raise ValueError("KLRD_RS_VLLM_MAX_NUM_BATCHED_TOKENS must cover concurrent sequences")
+    return values
+
+
 def generate_attacks(cfg):
     import torch
     from transformers import AutoModelForCausalLM, LogitsProcessorList
@@ -731,7 +784,6 @@ def generate_attacks(cfg):
         from transformers import AutoConfig, GenerationConfig
         from vllm import LLM, SamplingParams
         from klrd_rs.e3.generation import _vllm_options
-        from klrd_rs.e3.vllm_execution import tuning
 
         torch.set_float32_matmul_precision("highest")
         torch.backends.cuda.matmul.allow_tf32 = False
@@ -749,7 +801,8 @@ def generate_attacks(cfg):
         native_context = getattr(model_config, "max_position_embeddings", None)
         if native_context is not None and required_context > native_context:
             raise ValueError("Prompt plus requested generation exceeds the model context")
-        execution = dict(tuning(), backend="vllm", cudagraph_mode="FULL_DECODE_ONLY",
+        execution = _e4_vllm_execution()
+        execution.update(backend="vllm", cudagraph_mode="FULL_DECODE_ONLY",
             precision_note="FP32 remains FP32; sampled token identity across backends/batch shapes is not asserted",
             max_model_len=max(2048, required_context), max_prompt_tokens=maximum_prompt_length)
         engine_settings = {"model": str(checkpoint), "revision": None,
@@ -780,11 +833,7 @@ def generate_attacks(cfg):
         if backend == "vllm":
             identity["execution"] = execution
         identity_path = out / "identity.json"
-        if identity_path.exists() and json.loads(identity_path.read_text(encoding="utf-8")) != identity:
-            raise ValueError(f"Refusing to resume {journal}: generation identity/configuration changed")
-        if journal.exists() and not identity_path.exists():
-            raise ValueError(f"Refusing to resume unbound response journal: {journal}")
-        atomic_json(identity_path, identity)
+        identity = _bind_generation_identity(identity_path, journal, identity, done)
         if backend == "vllm":
             pending = [row for row in prompts if row["prompt_id"] not in done]
             batch_size = execution["request_batch_size"]
@@ -950,7 +999,8 @@ def arc_utility(cfg):
     mapping = torch.load(root / "mapping/suppression_mapping.pt", map_location="cpu", weights_only=True)
     mapping = {int(key): (token_ids.to("cuda"), weights.to("cuda"))
                for key, (token_ids, weights) in mapping.items()}
-    e3_arc = __import__("klrd_rs.e3full.arc", fromlist=["SETTINGS", "TASK", "DATA_SEED"])
+    e3_arc = __import__("klrd_rs.e3full.arc",
+                        fromlist=["SETTINGS", "TASK", "DATA_SEED", "_counts"])
     if metadata.version("lm_eval") != e3_arc.HARNESS_VERSION:
         raise RuntimeError(f"ARC requires the E3-pinned lm_eval=={e3_arc.HARNESS_VERSION}")
     original_call = HFLM._model_call
@@ -986,24 +1036,15 @@ def arc_utility(cfg):
                 write_json(binding_path, binding)
             result = lm_eval.simple_evaluate(model="hf", model_args=model_args,
                 tasks=[e3_arc.TASK], num_fewshot=0, batch_size=1, limit=None,
-                apply_chat_template=True, log_samples=True, bootstrap_iters=1000,
+                apply_chat_template=True, log_samples=False, bootstrap_iters=1000,
                 random_seed=e3_arc.DATA_SEED, numpy_random_seed=e3_arc.DATA_SEED,
                 torch_random_seed=e3_arc.DATA_SEED, fewshot_random_seed=e3_arc.DATA_SEED,
                 use_cache=str(cache / "likelihood"))
-            task = result["results"][e3_arc.TASK]
-            metric = task.get("acc_norm,none")
-            if metric is None:
-                raise ValueError("ARC harness omitted acc_norm,none")
-            sample_rows = result.get("samples", {}).get(e3_arc.TASK, [])
-            if len(sample_rows) != cfg["experiment"]["arc_examples"]:
-                raise ValueError("ARC sample results do not contain all 1,172 examples; refusing to infer correct count")
-            sample_scores = [row.get("acc_norm,none") for row in sample_rows]
-            if any(score not in (0, 1, 0.0, 1.0) for score in sample_scores):
-                raise ValueError("ARC per-example acc_norm,none decisions are missing or not binary")
-            correct_count = int(sum(sample_scores))
+            arc_counts = e3_arc._counts(result, cfg["experiment"]["arc_examples"])
             rows.append({"condition": condition_name,
-                "delta": delta, "accuracy": float(metric), "accuracy_percent": 100 * float(metric),
-                "correct": correct_count, "total": len(sample_rows),
+                "delta": delta, "accuracy": arc_counts["accuracy"],
+                "accuracy_percent": arc_counts["accuracy_percent"],
+                "correct": arc_counts["correct_count"], "total": arc_counts["total_count"],
                 "backend": "lm_eval HFLM; E3 ARC-Challenge acc_norm,none FP32 batch1"})
         finally:
             HFLM._model_call = original_call
@@ -1012,6 +1053,17 @@ def arc_utility(cfg):
     write_csv(root / "arc/results.csv", rows, list(rows[0]))
     atomic_json(root / "arc/results.json", {"settings": e3_arc.SETTINGS, "models": rows,
         "attacked_scoring": "HFLM logits adjusted at every predicted continuation token using preceding input token"})
+
+
+def _q1000_owner_pvalue(rows, condition):
+    owner = [row for row in rows
+             if row.get("model") == condition
+             and row.get("role") == "owner"
+             and int(row["Q"]) == 1000
+             and int(row["test_key"]) == 0]
+    if len(owner) != 1:
+        raise ValueError(f"Expected one exact owner Q=1000 p-value for {condition}")
+    return float(owner[0]["p_value"])
 
 
 def report(cfg):
@@ -1034,7 +1086,7 @@ def report(cfg):
     e3_phase = _e3_state(cfg)
     e3_summary = json.loads((e3_phase["out"] / "eval1024/utility/generation_summary.json").read_text(encoding="utf-8"))
     utilities = {d: json.loads((generation_root / f"delta_{d}/utility.json").read_text(encoding="utf-8")) for d in deltas}
-    metrics.append(("ARC-C accuracy (%)", lambda data: None, lambda data: None))
+    metrics.append(("ARC-C accuracy (%)", lambda data: None, lambda data, d=None: None))
     metrics.append(("Mean response length (words)", lambda data: e3_summary["student"]["mean_words"],
                     lambda data, d=None: utilities[d]["mean_words"]))
     metrics.append(("Truncation rate (%)", lambda data: 100 * e3_summary["student"]["max_length_truncation_rate"],
@@ -1077,10 +1129,7 @@ def report(cfg):
     for condition, file in files:
         with file.open(encoding="utf-8", newline="") as stream:
             qrows = list(__import__("csv").DictReader(stream))
-        owner = [r for r in qrows if int(r["Q"]) == 1000 and int(r["test_key"]) == 0]
-        if len(owner) != 1:
-            raise ValueError(f"Expected one exact owner Q=1000 p-value for {condition}")
-        pvalue = float(owner[0]["p_value"])
+        pvalue = _q1000_owner_pvalue(qrows, condition)
         q1000[condition] = {"p_value": pvalue,
             "decisions": {str(alpha): pvalue <= alpha for alpha in cfg["experiment"]["verification_alphas"]},
             "groups": 1, "Q": 1000}

@@ -1,0 +1,83 @@
+{
+  "settings": {
+    "tasks": [
+      "arc_challenge"
+    ],
+    "metric": "acc_norm,none",
+    "num_fewshot": 0,
+    "batch_size": 1,
+    "max_length": 4096,
+    "limit": null,
+    "apply_chat_template": true,
+    "log_samples": false,
+    "bootstrap_iters": 1000,
+    "data_seed": 20261021,
+    "scoring": "native HFLM answer-choice loglikelihood; character-normalized acc_norm",
+    "likelihood_temperature": 1.0,
+    "free_generation_tau_applied": false,
+    "attention_implementation": "sdpa",
+    "autocast": false,
+    "historical_model_dtype": "bfloat16",
+    "model_dtype": "float32",
+    "numerically_equivalent_to_historical_bf16": false,
+    "precision_reason": "Match the frozen exact teacher FP32 geometry/native readout across all four models",
+    "checkpoint_selection": "existing validation-KL selection only; no ARC-based selection"
+  },
+  "models": [
+    {
+      "condition": "clean",
+      "delta": null,
+      "accuracy": 0.43686006825938567,
+      "accuracy_percent": 43.68600682593857,
+      "correct": 512,
+      "total": 1172,
+      "backend": "lm_eval HFLM; E3 ARC-Challenge acc_norm,none FP32 batch1"
+    },
+    {
+      "condition": "baseline",
+      "delta": 0,
+      "accuracy": 0.43686006825938567,
+      "accuracy_percent": 43.68600682593857,
+      "correct": 512,
+      "total": 1172,
+      "backend": "lm_eval HFLM; E3 ARC-Challenge acc_norm,none FP32 batch1"
+    },
+    {
+      "condition": "delta_2",
+      "delta": 2,
+      "accuracy": 0.44368600682593856,
+      "accuracy_percent": 44.36860068259386,
+      "correct": 520,
+      "total": 1172,
+      "backend": "lm_eval HFLM; E3 ARC-Challenge acc_norm,none FP32 batch1"
+    },
+    {
+      "condition": "delta_4",
+      "delta": 4,
+      "accuracy": 0.4377133105802048,
+      "accuracy_percent": 43.77133105802048,
+      "correct": 513,
+      "total": 1172,
+      "backend": "lm_eval HFLM; E3 ARC-Challenge acc_norm,none FP32 batch1"
+    },
+    {
+      "condition": "delta_8",
+      "delta": 8,
+      "accuracy": 0.4249146757679181,
+      "accuracy_percent": 42.491467576791806,
+      "correct": 498,
+      "total": 1172,
+      "backend": "lm_eval HFLM; E3 ARC-Challenge acc_norm,none FP32 batch1"
+    },
+    {
+      "condition": "delta_12",
+      "delta": 12,
+      "accuracy": 0.41467576791808874,
+      "accuracy_percent": 41.467576791808874,
+      "correct": 486,
+      "total": 1172,
+      "backend": "lm_eval HFLM; E3 ARC-Challenge acc_norm,none FP32 batch1"
+    }
+  ],
+  "attacked_scoring": "HFLM logits adjusted at every predicted continuation token using preceding input token"
+}

@@ -1,0 +1,541 @@
+{
+  "baseline": {
+    "results": [
+      {
+        "model": "baseline",
+        "Q": 20,
+        "alpha": 0.01,
+        "groups": 50,
+        "detections": 50,
+        "rate": 1.0,
+        "CI95_low": 0.9288782635358024,
+        "CI95_high": 1.0,
+        "wrong_mean": 0.0,
+        "wrong_worst": 0.0,
+        "identification_rate": 1.0,
+        "identification_ties": 0,
+        "cosine_median": 0.8239933878997274,
+        "p_median": 1.9132195293282635e-09,
+        "scope": "groups disjoint within Q; budgets nested/dependent"
+      },
+      {
+        "model": "baseline",
+        "Q": 20,
+        "alpha": 0.0001,
+        "groups": 50,
+        "detections": 50,
+        "rate": 1.0,
+        "CI95_low": 0.9288782635358024,
+        "CI95_high": 1.0,
+        "wrong_mean": 0.0,
+        "wrong_worst": 0.0,
+        "identification_rate": 1.0,
+        "identification_ties": 0,
+        "cosine_median": 0.8239933878997274,
+        "p_median": 1.9132195293282635e-09,
+        "scope": "groups disjoint within Q; budgets nested/dependent"
+      },
+      {
+        "model": "baseline",
+        "Q": 50,
+        "alpha": 0.01,
+        "groups": 20,
+        "detections": 20,
+        "rate": 1.0,
+        "CI95_low": 0.8315665290169146,
+        "CI95_high": 1.0,
+        "wrong_mean": 0.0,
+        "wrong_worst": 0.0,
+        "identification_rate": 1.0,
+        "identification_ties": 0,
+        "cosine_median": 0.9223051946391695,
+        "p_median": 1.267199584872381e-14,
+        "scope": "groups disjoint within Q; budgets nested/dependent"
+      },
+      {
+        "model": "baseline",
+        "Q": 50,
+        "alpha": 0.0001,
+        "groups": 20,
+        "detections": 20,
+        "rate": 1.0,
+        "CI95_low": 0.8315665290169146,
+        "CI95_high": 1.0,
+        "wrong_mean": 0.0,
+        "wrong_worst": 0.0,
+        "identification_rate": 1.0,
+        "identification_ties": 0,
+        "cosine_median": 0.9223051946391695,
+        "p_median": 1.267199584872381e-14,
+        "scope": "groups disjoint within Q; budgets nested/dependent"
+      },
+      {
+        "model": "baseline",
+        "Q": 100,
+        "alpha": 0.01,
+        "groups": 10,
+        "detections": 10,
+        "rate": 1.0,
+        "CI95_low": 0.6915028921812392,
+        "CI95_high": 1.0,
+        "wrong_mean": 0.0,
+        "wrong_worst": 0.0,
+        "identification_rate": 1.0,
+        "identification_ties": 0,
+        "cosine_median": 0.9484695858311294,
+        "p_median": 3.031838532523625e-17,
+        "scope": "groups disjoint within Q; budgets nested/dependent"
+      },
+      {
+        "model": "baseline",
+        "Q": 100,
+        "alpha": 0.0001,
+        "groups": 10,
+        "detections": 10,
+        "rate": 1.0,
+        "CI95_low": 0.6915028921812392,
+        "CI95_high": 1.0,
+        "wrong_mean": 0.0,
+        "wrong_worst": 0.0,
+        "identification_rate": 1.0,
+        "identification_ties": 0,
+        "cosine_median": 0.9484695858311294,
+        "p_median": 3.031838532523625e-17,
+        "scope": "groups disjoint within Q; budgets nested/dependent"
+      },
+      {
+        "model": "baseline",
+        "Q": 1000,
+        "alpha": 0.01,
+        "groups": 1,
+        "detections": 1,
+        "rate": 1.0,
+        "CI95_low": null,
+        "CI95_high": null,
+        "wrong_mean": 0.0,
+        "wrong_worst": 0.0,
+        "identification_rate": 1.0,
+        "identification_ties": 0,
+        "cosine_median": 0.9889537116181546,
+        "p_median": 1.4282118690029656e-27,
+        "scope": "single descriptive aggregate; no group CI"
+      },
+      {
+        "model": "baseline",
+        "Q": 1000,
+        "alpha": 0.0001,
+        "groups": 1,
+        "detections": 1,
+        "rate": 1.0,
+        "CI95_low": null,
+        "CI95_high": null,
+        "wrong_mean": 0.0,
+        "wrong_worst": 0.0,
+        "identification_rate": 1.0,
+        "identification_ties": 0,
+        "cosine_median": 0.9889537116181546,
+        "p_median": 1.4282118690029656e-27,
+        "scope": "single descriptive aggregate; no group CI"
+      },
+      {
+        "model": "clean_control",
+        "Q": 20,
+        "alpha": 0.01,
+        "groups": 50,
+        "detections": 0,
+        "rate": 0.0,
+        "CI95_low": 0.0,
+        "CI95_high": 0.07112173646419764,
+        "wrong_mean": 0.004,
+        "wrong_worst": 0.04,
+        "identification_rate": 0.06,
+        "identification_ties": 0,
+        "cosine_median": -0.019518401436731288,
+        "p_median": 0.5429221287328909,
+        "scope": "groups disjoint within Q; budgets nested/dependent"
+      },
+      {
+        "model": "clean_control",
+        "Q": 20,
+        "alpha": 0.0001,
+        "groups": 50,
+        "detections": 0,
+        "rate": 0.0,
+        "CI95_low": 0.0,
+        "CI95_high": 0.07112173646419764,
+        "wrong_mean": 0.0,
+        "wrong_worst": 0.0,
+        "identification_rate": 0.06,
+        "identification_ties": 0,
+        "cosine_median": -0.019518401436731288,
+        "p_median": 0.5429221287328909,
+        "scope": "groups disjoint within Q; budgets nested/dependent"
+      },
+      {
+        "model": "clean_control",
+        "Q": 50,
+        "alpha": 0.01,
+        "groups": 20,
+        "detections": 0,
+        "rate": 0.0,
+        "CI95_low": 0.0,
+        "CI95_high": 0.1684334709830853,
+        "wrong_mean": 0.01,
+        "wrong_worst": 0.05,
+        "identification_rate": 0.0,
+        "identification_ties": 0,
+        "cosine_median": -0.00955175158128504,
+        "p_median": 0.5210352327745333,
+        "scope": "groups disjoint within Q; budgets nested/dependent"
+      },
+      {
+        "model": "clean_control",
+        "Q": 50,
+        "alpha": 0.0001,
+        "groups": 20,
+        "detections": 0,
+        "rate": 0.0,
+        "CI95_low": 0.0,
+        "CI95_high": 0.1684334709830853,
+        "wrong_mean": 0.0,
+        "wrong_worst": 0.0,
+        "identification_rate": 0.0,
+        "identification_ties": 0,
+        "cosine_median": -0.00955175158128504,
+        "p_median": 0.5210352327745333,
+        "scope": "groups disjoint within Q; budgets nested/dependent"
+      },
+      {
+        "model": "clean_control",
+        "Q": 100,
+        "alpha": 0.01,
+        "groups": 10,
+        "detections": 0,
+        "rate": 0.0,
+        "CI95_low": 0.0,
+        "CI95_high": 0.3084971078187608,
+        "wrong_mean": 0.005,
+        "wrong_worst": 0.1,
+        "identification_rate": 0.1,
+        "identification_ties": 0,
+        "cosine_median": 0.006165100833997288,
+        "p_median": 0.4864361641509497,
+        "scope": "groups disjoint within Q; budgets nested/dependent"
+      },
+      {
+        "model": "clean_control",
+        "Q": 100,
+        "alpha": 0.0001,
+        "groups": 10,
+        "detections": 0,
+        "rate": 0.0,
+        "CI95_low": 0.0,
+        "CI95_high": 0.3084971078187608,
+        "wrong_mean": 0.0,
+        "wrong_worst": 0.0,
+        "identification_rate": 0.1,
+        "identification_ties": 0,
+        "cosine_median": 0.006165100833997288,
+        "p_median": 0.4864361641509497,
+        "scope": "groups disjoint within Q; budgets nested/dependent"
+      },
+      {
+        "model": "clean_control",
+        "Q": 1000,
+        "alpha": 0.01,
+        "groups": 1,
+        "detections": 0,
+        "rate": 0.0,
+        "CI95_low": null,
+        "CI95_high": null,
+        "wrong_mean": 0.0,
+        "wrong_worst": 0.0,
+        "identification_rate": 0.0,
+        "identification_ties": 0,
+        "cosine_median": -0.08766986968948863,
+        "p_median": 0.6862122034649897,
+        "scope": "single descriptive aggregate; no group CI"
+      },
+      {
+        "model": "clean_control",
+        "Q": 1000,
+        "alpha": 0.0001,
+        "groups": 1,
+        "detections": 0,
+        "rate": 0.0,
+        "CI95_low": null,
+        "CI95_high": null,
+        "wrong_mean": 0.0,
+        "wrong_worst": 0.0,
+        "identification_rate": 0.0,
+        "identification_ties": 0,
+        "cosine_median": -0.08766986968948863,
+        "p_median": 0.6862122034649897,
+        "scope": "single descriptive aggregate; no group CI"
+      }
+    ],
+    "reused_e3_full": true
+  },
+  "conditions": [
+    {
+      "metric": "TPR Q20 alpha=0.01",
+      "no_attack": 1.0,
+      "delta_2": 1.0,
+      "delta_4": 0.92,
+      "delta_8": 0.0,
+      "delta_12": 0.0
+    },
+    {
+      "metric": "TPR Q20 alpha=0.0001",
+      "no_attack": 1.0,
+      "delta_2": 0.96,
+      "delta_4": 0.08,
+      "delta_8": 0.0,
+      "delta_12": 0.0
+    },
+    {
+      "metric": "TPR Q50 alpha=0.01",
+      "no_attack": 1.0,
+      "delta_2": 1.0,
+      "delta_4": 1.0,
+      "delta_8": 0.0,
+      "delta_12": 0.0
+    },
+    {
+      "metric": "TPR Q50 alpha=0.0001",
+      "no_attack": 1.0,
+      "delta_2": 1.0,
+      "delta_4": 0.15,
+      "delta_8": 0.0,
+      "delta_12": 0.0
+    },
+    {
+      "metric": "TPR Q100 alpha=0.01",
+      "no_attack": 1.0,
+      "delta_2": 1.0,
+      "delta_4": 1.0,
+      "delta_8": 0.0,
+      "delta_12": 0.0
+    },
+    {
+      "metric": "TPR Q100 alpha=0.0001",
+      "no_attack": 1.0,
+      "delta_2": 1.0,
+      "delta_4": 0.1,
+      "delta_8": 0.0,
+      "delta_12": 0.0
+    },
+    {
+      "metric": "Wrong-key acceptance mean",
+      "no_attack": 0.0,
+      "delta_2": 0.0,
+      "delta_4": 0.0,
+      "delta_8": 0.0,
+      "delta_12": 0.0
+    },
+    {
+      "metric": "ARC-C accuracy (%)",
+      "no_attack": 43.68600682593857,
+      "delta_2": 44.36860068259386,
+      "delta_4": 43.77133105802048,
+      "delta_8": 42.491467576791806,
+      "delta_12": 41.467576791808874,
+      "clean_control": 43.68600682593857
+    },
+    {
+      "metric": "Mean response length (words)",
+      "no_attack": 486.29,
+      "delta_2": 497.681,
+      "delta_4": 511.789,
+      "delta_8": 568.856,
+      "delta_12": 687.339
+    },
+    {
+      "metric": "Truncation rate (%)",
+      "no_attack": 22.8,
+      "delta_2": 25.2,
+      "delta_4": 28.199999999999996,
+      "delta_8": 50.0,
+      "delta_12": 73.7
+    },
+    {
+      "metric": "Severe repetition rate (%)",
+      "no_attack": 0.1,
+      "delta_2": 0.2,
+      "delta_4": 0.3,
+      "delta_8": 20.4,
+      "delta_12": 65.7
+    },
+    {
+      "metric": "Suppression coverage (%)",
+      "no_attack": null,
+      "delta_2": 51.21544837653548,
+      "delta_4": 52.23403478540239,
+      "delta_8": 59.01743116820811,
+      "delta_12": 70.81270820077104
+    },
+    {
+      "metric": "Clean acceptance Q100 alpha=0.01",
+      "no_attack": 0.0,
+      "delta_2": null,
+      "delta_4": null,
+      "delta_8": null,
+      "delta_12": null
+    },
+    {
+      "metric": "Clean acceptance Q100 alpha=0.0001",
+      "no_attack": 0.0,
+      "delta_2": null,
+      "delta_4": null,
+      "delta_8": null,
+      "delta_12": null
+    },
+    {
+      "metric": "ARC-C correct/total",
+      "clean_control": "512/1172",
+      "no_attack": "512/1172",
+      "delta_2": "520/1172",
+      "delta_4": "513/1172",
+      "delta_8": "498/1172",
+      "delta_12": "486/1172"
+    },
+    {
+      "metric": "Mean generated tokens/response",
+      "no_attack": 656.451,
+      "delta_2": 668.601,
+      "delta_4": 684.77,
+      "delta_8": 750.38,
+      "delta_12": 854.944
+    }
+  ],
+  "q1000_exact": {
+    "baseline": {
+      "p_value": 1.4282118690029656e-27,
+      "decisions": {
+        "0.01": true,
+        "0.0001": true
+      },
+      "groups": 1,
+      "Q": 1000
+    },
+    "delta_2": {
+      "p_value": 3.292578999958174e-09,
+      "decisions": {
+        "0.01": true,
+        "0.0001": true
+      },
+      "groups": 1,
+      "Q": 1000
+    },
+    "delta_4": {
+      "p_value": 0.00019473980979248462,
+      "decisions": {
+        "0.01": true,
+        "0.0001": false
+      },
+      "groups": 1,
+      "Q": 1000
+    },
+    "delta_8": {
+      "p_value": 0.038514256788221936,
+      "decisions": {
+        "0.01": false,
+        "0.0001": false
+      },
+      "groups": 1,
+      "Q": 1000
+    },
+    "delta_12": {
+      "p_value": 0.05351178239103377,
+      "decisions": {
+        "0.01": false,
+        "0.0001": false
+      },
+      "groups": 1,
+      "Q": 1000
+    }
+  },
+  "arc": {
+    "settings": {
+      "tasks": [
+        "arc_challenge"
+      ],
+      "metric": "acc_norm,none",
+      "num_fewshot": 0,
+      "batch_size": 1,
+      "max_length": 4096,
+      "limit": null,
+      "apply_chat_template": true,
+      "log_samples": false,
+      "bootstrap_iters": 1000,
+      "data_seed": 20261021,
+      "scoring": "native HFLM answer-choice loglikelihood; character-normalized acc_norm",
+      "likelihood_temperature": 1.0,
+      "free_generation_tau_applied": false,
+      "attention_implementation": "sdpa",
+      "autocast": false,
+      "historical_model_dtype": "bfloat16",
+      "model_dtype": "float32",
+      "numerically_equivalent_to_historical_bf16": false,
+      "precision_reason": "Match the frozen exact teacher FP32 geometry/native readout across all four models",
+      "checkpoint_selection": "existing validation-KL selection only; no ARC-based selection"
+    },
+    "models": [
+      {
+        "condition": "clean",
+        "delta": null,
+        "accuracy": 0.43686006825938567,
+        "accuracy_percent": 43.68600682593857,
+        "correct": 512,
+        "total": 1172,
+        "backend": "lm_eval HFLM; E3 ARC-Challenge acc_norm,none FP32 batch1"
+      },
+      {
+        "condition": "baseline",
+        "delta": 0,
+        "accuracy": 0.43686006825938567,
+        "accuracy_percent": 43.68600682593857,
+        "correct": 512,
+        "total": 1172,
+        "backend": "lm_eval HFLM; E3 ARC-Challenge acc_norm,none FP32 batch1"
+      },
+      {
+        "condition": "delta_2",
+        "delta": 2,
+        "accuracy": 0.44368600682593856,
+        "accuracy_percent": 44.36860068259386,
+        "correct": 520,
+        "total": 1172,
+        "backend": "lm_eval HFLM; E3 ARC-Challenge acc_norm,none FP32 batch1"
+      },
+      {
+        "condition": "delta_4",
+        "delta": 4,
+        "accuracy": 0.4377133105802048,
+        "accuracy_percent": 43.77133105802048,
+        "correct": 513,
+        "total": 1172,
+        "backend": "lm_eval HFLM; E3 ARC-Challenge acc_norm,none FP32 batch1"
+      },
+      {
+        "condition": "delta_8",
+        "delta": 8,
+        "accuracy": 0.4249146757679181,
+        "accuracy_percent": 42.491467576791806,
+        "correct": 498,
+        "total": 1172,
+        "backend": "lm_eval HFLM; E3 ARC-Challenge acc_norm,none FP32 batch1"
+      },
+      {
+        "condition": "delta_12",
+        "delta": 12,
+        "accuracy": 0.41467576791808874,
+        "accuracy_percent": 41.467576791808874,
+        "correct": 486,
+        "total": 1172,
+        "backend": "lm_eval HFLM; E3 ARC-Challenge acc_norm,none FP32 batch1"
+      }
+    ],
+    "attacked_scoring": "HFLM logits adjusted at every predicted continuation token using preceding input token"
+  }
+}

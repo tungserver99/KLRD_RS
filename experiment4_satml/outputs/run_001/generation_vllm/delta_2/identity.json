@@ -1,0 +1,38 @@
+{
+  "e3_identity": "d62f8e6c907e2aa47691c60d934afb302269fd8c4b191b75401548b51dd6b34e",
+  "checkpoint": "/content/drive/Othercomputers/My Computer/Google Drive Offline/PHD/LLM_fingerprint/KLRD_RS/experiment3_full/run_001/merged_student",
+  "prompts_sha256": "26e7ce86865555bdabddda1faed79ce3454a3fd84a72b8b2d02dba263980cf5c",
+  "backend": "vllm.generate",
+  "e3_reference_backend": "vllm",
+  "delta": 2,
+  "settings": {
+    "model": "/content/drive/Othercomputers/My Computer/Google Drive Offline/PHD/LLM_fingerprint/KLRD_RS/experiment3_full/run_001/merged_student",
+    "revision": null,
+    "tokenizer": "/content/drive/Othercomputers/My Computer/Google Drive Offline/PHD/LLM_fingerprint/KLRD_RS/experiment3_full/run_001/merged_student",
+    "tokenizer_revision": null,
+    "backend": "vllm",
+    "dtype": "float32",
+    "temperature": 0.8,
+    "top_p": 1.0,
+    "top_k": 0,
+    "max_new_tokens": 1024,
+    "seed": 2026110301,
+    "kind": "student",
+    "eos_token_ids": [
+      151645,
+      151643
+    ]
+  },
+  "mapping_sha256": "4edb57db4003a816aa504928bdbbb6c269aa89ae5118b241caa98c3e7858e90a",
+  "execution": {
+    "request_batch_size": 16,
+    "max_num_seqs": 8,
+    "max_num_batched_tokens": 2048,
+    "gpu_memory_utilization": 0.7,
+    "backend": "vllm",
+    "cudagraph_mode": "FULL_DECODE_ONLY",
+    "precision_note": "FP32 remains FP32; sampled token identity across backends/batch shapes is not asserted",
+    "max_model_len": 2048,
+    "max_prompt_tokens": 536
+  }
+}

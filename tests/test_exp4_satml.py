@@ -1,4 +1,5 @@
 import ast
+import json
 import math
 from pathlib import Path
 
@@ -12,8 +13,9 @@ from experiment4_satml.core import (assert_tokenizer_compatible, calibration_pro
     run_cached_next_token_logits, split_cached_prefix, top_seed_words,
     valid_seed_words, validate_output_vocab_sizes)
 from experiment4_satml.pipeline import (_cached_hub_revision, _estimate_mapping_eta_seconds,
-    _apply_bigram_adjustment, _first_captured_batches, _generation_root,
-    _make_vllm_suppression_processor, _jsonl,
+    _apply_bigram_adjustment, _bind_generation_identity, _first_captured_batches,
+    _generation_root, _q1000_owner_pvalue,
+    _e4_vllm_execution, _make_vllm_suppression_processor, _jsonl,
     _normalize_eos_token_ids, _unique_index)
 
 source_path = ROOT / "experiment4_satml/vendor/mlprints/bigram_suppression.py"
@@ -161,6 +163,62 @@ def test_generation_output_root_separates_vllm_from_existing_transformers_journa
     assert _generation_root(cfg) == tmp_path / "generation"
     cfg["experiment"]["generation_backend"] = "vllm"
     assert _generation_root(cfg) == tmp_path / "generation_vllm"
+
+
+def test_e4_vllm_execution_uses_small_defaults_and_honors_environment_overrides():
+    execution = _e4_vllm_execution({})
+    assert execution["request_batch_size"] == 16
+    assert execution["max_num_seqs"] == 8
+    assert execution["max_num_batched_tokens"] == 2048
+    assert execution["gpu_memory_utilization"] == 0.70
+    env = {"KLRD_RS_VLLM_REQUEST_BATCH_SIZE": "12",
+           "KLRD_RS_VLLM_MAX_NUM_SEQS": "4",
+           "KLRD_RS_VLLM_MAX_NUM_BATCHED_TOKENS": "512",
+           "KLRD_RS_VLLM_GPU_MEMORY_UTILIZATION": "0.55"}
+    adjusted = _e4_vllm_execution(env)
+    assert adjusted["request_batch_size"] == 12
+    assert adjusted["max_num_seqs"] == 4
+    assert adjusted["max_num_batched_tokens"] == 512
+    assert adjusted["gpu_memory_utilization"] == 0.55
+
+
+def test_generation_identity_can_update_only_before_any_rows_are_committed(tmp_path):
+    identity_path = tmp_path / "identity.json"
+    journal = tmp_path / "responses.jsonl"
+    original = {"delta": 2, "settings": {"seed": 42},
+                "execution": {"max_num_seqs": 64, "gpu_memory_utilization": 0.85,
+                              "cudagraph_mode": "FULL_DECODE_ONLY",
+                              "cudagraph_capture_sizes": [1, 2, 4, 8, 16, 32, 64]}}
+    updated = {"delta": 2, "settings": {"seed": 42},
+               "execution": {"max_num_seqs": 8, "gpu_memory_utilization": 0.70,
+                             "cudagraph_mode": "NONE",
+                             "cudagraph_capture_sizes": []}}
+    identity_path.write_text(json.dumps(original), encoding="utf-8")
+    assert _bind_generation_identity(identity_path, journal, updated, {}) == updated
+    assert json.loads(identity_path.read_text(encoding="utf-8")) == updated
+    with pytest.raises(ValueError, match="generation identity/configuration changed"):
+        _bind_generation_identity(identity_path, journal,
+                                  {**updated, "delta": 4}, {})
+    journal.write_text('{"prompt_id": "p1"}\n', encoding="utf-8")
+    assert _bind_generation_identity(identity_path, journal, original,
+                                     {"p1": {"prompt_id": "p1"}}) == updated
+    assert json.loads(identity_path.read_text(encoding="utf-8")) == updated
+    with pytest.raises(ValueError, match="generation identity/configuration changed"):
+        _bind_generation_identity(identity_path, journal,
+                                  {**original, "delta": 4}, {"p1": {}})
+
+
+def test_q1000_report_selects_owner_for_the_requested_model():
+    rows = [
+        {"model": "baseline", "Q": "1000", "role": "owner",
+         "test_key": "0", "p_value": "1.2e-8"},
+        {"model": "clean_control", "Q": "1000", "role": "owner",
+         "test_key": "0", "p_value": "0.5"},
+        {"model": "baseline", "Q": "1000", "role": "wrong",
+         "test_key": "1", "p_value": "0.9"},
+    ]
+    assert _q1000_owner_pvalue(rows, "baseline") == pytest.approx(1.2e-8)
+    assert _q1000_owner_pvalue(rows, "clean_control") == 0.5
 
 
 def test_bigram_adjustment_adapter_preserves_original_sparse_signed_math():

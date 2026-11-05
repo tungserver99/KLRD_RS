@@ -1,0 +1,15 @@
+{
+  "delta": 8,
+  "generation_steps": 750380,
+  "covered_steps": 442855,
+  "covered_step_fraction": 0.5901743116820811,
+  "adjusted_step_fraction": 0.5901743116820811,
+  "mean_expected_absolute_logit_adjustment": 2.1417981413371323,
+  "expected_nonzero_adjustment_value_fraction": 1.0,
+  "expected_nonzero_adjustment_values": 2059784631,
+  "observed_floating_point_changes_measured": false,
+  "mapping_preceding_tokens": 5506,
+  "backend": "vllm.generate",
+  "e3_reference_backend": "vllm",
+  "sampling_parity_claim": false
+}

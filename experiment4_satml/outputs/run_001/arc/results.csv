@@ -1,0 +1,7 @@
+condition,delta,accuracy,accuracy_percent,correct,total,backend
+clean,,0.43686006825938567,43.68600682593857,512,1172,"lm_eval HFLM; E3 ARC-Challenge acc_norm,none FP32 batch1"
+baseline,0,0.43686006825938567,43.68600682593857,512,1172,"lm_eval HFLM; E3 ARC-Challenge acc_norm,none FP32 batch1"
+delta_2,2,0.44368600682593856,44.36860068259386,520,1172,"lm_eval HFLM; E3 ARC-Challenge acc_norm,none FP32 batch1"
+delta_4,4,0.4377133105802048,43.77133105802048,513,1172,"lm_eval HFLM; E3 ARC-Challenge acc_norm,none FP32 batch1"
+delta_8,8,0.4249146757679181,42.491467576791806,498,1172,"lm_eval HFLM; E3 ARC-Challenge acc_norm,none FP32 batch1"
+delta_12,12,0.41467576791808874,41.467576791808874,486,1172,"lm_eval HFLM; E3 ARC-Challenge acc_norm,none FP32 batch1"
