@@ -1,6 +1,7 @@
 """Lazy profile-specific vLLM registration and exact Llama runtime options."""
 
 from importlib.metadata import PackageNotFoundError, version
+import os
 import re
 from typing import Any, Mapping
 
@@ -33,7 +34,9 @@ def register_profile_architecture(profile: ModelProfile) -> None:
     profile.validate()
     if profile.model_type != "llama" or profile.vllm_architecture != "KLRDRSLlamaForCausalLM":
         raise ValueError("PORTABLE_VLLM_FAMILY_UNSUPPORTED: only the explicit Llama architecture is registered")
-    # Resolve vLLM and the custom class only in the server-side engine process.
+    # The custom registry entry is process-local. Keep V1 EngineCore in this
+    # process so it can resolve the architecture registered immediately below.
+    os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
     import vllm
     installed = getattr(vllm, "__version__", None)
     if installed is None:
@@ -56,6 +59,7 @@ def runtime_identity(profile: ModelProfile) -> dict[str, Any]:
         "reference_vllm_version": profile.runtime.get("vllm_version"),
         "installed_vllm_version": installed,
         "architecture": profile.vllm_architecture,
+        "v1_engine_core_multiprocessing": False,
         "model_type": profile.model_type,
         "dtype": profile.runtime["teacher_dtype"],
         "use_tf32": profile.runtime["use_tf32"],

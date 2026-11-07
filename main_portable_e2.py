@@ -8,7 +8,7 @@ from pathlib import Path
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", default="llama32_3b")
-    parser.add_argument("--mode", choices=("inspect", "smoke", "run", "report"), required=True)
+    parser.add_argument("--mode", choices=("inspect", "smoke", "pilot", "run", "report"), required=True)
     parser.add_argument("--e1", type=Path)
     parser.add_argument("--output", type=Path)
     return parser

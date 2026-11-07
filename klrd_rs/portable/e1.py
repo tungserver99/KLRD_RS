@@ -11,7 +11,7 @@ import numpy as np
 import torch
 
 from ..io import digest, read_json, read_jsonl, save_npz, sha256, write_json, write_csv
-from ..math import choose_lambda, fit_fisher, key_ids, keys, planes, sphere_p
+from ..math import fit_fisher, key_ids, keys, planes, sphere_p
 from ..readout import RotationReadout
 from .calibration import (
     build_calibration_activation_rows,
@@ -114,6 +114,286 @@ def _score_visible_text_records(records: list[dict], backbone: Any, readout: Rot
     return np.asarray(vectors, dtype=np.float64), metadata
 
 
+LAMBDA_SELECTION_PROTOCOL_VERSION = "portable_e1_global_lambda_kl_budget_v2"
+LAMBDA_SELECTION_RULE = "MAX_FEASIBLE_LAMBDA_UNDER_KL_BUDGETS"
+
+
+def _lambda_trace_row(value: float, values: np.ndarray, target: float, p99_max: float,
+                      trace_index: int) -> dict:
+    raw = np.asarray(values, dtype=np.float64).reshape(-1)
+    finite = raw[np.isfinite(raw)]
+    stats = np.maximum(finite, 0.0)
+    mean = float(stats.mean()) if stats.size else None
+    p95 = float(np.quantile(stats, 0.95)) if stats.size else None
+    p99 = float(np.quantile(stats, 0.99)) if stats.size else None
+    maximum = float(stats.max()) if stats.size else None
+    numeric_ok = bool(
+        raw.size > 0 and np.isfinite(raw).all()
+        and (not finite.size or float(finite.min()) >= -1e-6)
+    )
+    mean_le_target = mean is not None and mean <= target
+    mean_within_budget = mean is not None and mean <= target
+    p99_within_limit = p99 is not None and p99 <= p99_max
+    return {
+        "trace_index": int(trace_index),
+        "lambda": float(value),
+        "measurement_count": int(raw.size),
+        "mean_KL": mean,
+        "p95_KL": p95,
+        "p99_KL": p99,
+        "max_KL": maximum,
+        "p99_over_mean": (p99 / mean) if p99 is not None and mean is not None and mean > 0 else None,
+        "numeric_valid": numeric_ok,
+        "mean_KL_le_target": mean_le_target,
+        "mean_KL_within_budget": mean_within_budget,
+        "p99_KL_within_limit": p99_within_limit,
+        "feasible": bool(numeric_ok and mean_within_budget and p99_within_limit),
+    }
+
+
+def choose_lambda_budget_constrained(
+    evaluate: Callable[[float], np.ndarray],
+    target: float,
+    p99_max: float,
+    max_lambda: float,
+    iterations: int,
+    trace: list[dict],
+    monotonicity_tolerance: float = 1e-8,
+) -> dict:
+    """Choose the largest globally feasible lambda by bracket and bisection."""
+    if not np.isfinite([target, p99_max, max_lambda]).all() or target <= 0 or p99_max <= 0 or max_lambda <= 0:
+        raise ValueError("LAMBDA_SEARCH_CONFIGURATION_INVALID")
+
+    def measure(value: float) -> dict:
+        values = np.asarray(evaluate(float(value)), dtype=np.float64).reshape(-1)
+        row = _lambda_trace_row(value, values, target, p99_max, len(trace))
+        trace.append(row)
+        if not row["numeric_valid"]:
+            raise ValueError("LAMBDA_SEARCH_NONFINITE_OR_INVALID_KL")
+        ordered = sorted(trace, key=lambda item: item["lambda"])
+        for left, right in zip(ordered, ordered[1:]):
+            if (right["mean_KL"] < left["mean_KL"] - monotonicity_tolerance
+                    or right["p99_KL"] < left["p99_KL"] - monotonicity_tolerance):
+                raise ValueError("LAMBDA_SEARCH_NON_MONOTONIC_KL_CURVE")
+        return row
+
+    zero = measure(0.0)
+    if (zero["mean_KL"] is None or zero["mean_KL"] > 1e-7
+            or not zero["p99_KL_within_limit"] or not zero["mean_KL_within_budget"]):
+        raise ValueError("LAMBDA_ZERO_STRENGTH_PARITY_FAILED")
+
+    low_row = zero
+    high_value = min(0.01, max_lambda)
+    high_row = measure(high_value)
+    while high_row["feasible"] and high_value < max_lambda:
+        low_row = high_row
+        high_value = min(2.0 * high_value, max_lambda)
+        high_row = measure(high_value)
+
+    if high_row["feasible"] and high_value == max_lambda:
+        selected = high_row
+        limiting_constraint = "MAX_LAMBDA"
+        max_lambda_reached = True
+    else:
+        max_lambda_reached = high_value == max_lambda
+        low_value = float(low_row["lambda"])
+        for _ in range(int(iterations)):
+            midpoint = (low_value + high_value) / 2.0
+            middle_row = measure(midpoint)
+            if middle_row["feasible"]:
+                low_value, low_row = midpoint, middle_row
+            else:
+                high_value, high_row = midpoint, middle_row
+        selected = low_row
+        violated = []
+        if not high_row["mean_KL_within_budget"]:
+            violated.append("MEAN_KL")
+        if not high_row["p99_KL_within_limit"]:
+            violated.append("P99_KL")
+        limiting_constraint = "BOTH" if len(violated) == 2 else violated[0] if violated else "BOTH"
+
+    if selected["lambda"] <= 0 or not selected["feasible"]:
+        raise ValueError("LAMBDA_SEARCH_NO_POSITIVE_FEASIBLE_LAMBDA")
+    return {
+        "selected_lambda": float(selected["lambda"]),
+        "selected_metrics": selected,
+        "limiting_constraint": limiting_constraint,
+        "max_lambda_reached": bool(max_lambda_reached),
+        "selection_rule": LAMBDA_SELECTION_RULE,
+        "selection_protocol_version": LAMBDA_SELECTION_PROTOCOL_VERSION,
+    }
+
+
+def _lambda_distribution(values: np.ndarray) -> dict:
+    values = np.asarray(values, dtype=np.float64).reshape(-1)
+    if not values.size:
+        return {"count": 0, "min": None, "mean": None, "p95": None, "p99": None, "max": None}
+    return {
+        "count": int(values.size),
+        "min": float(values.min()),
+        "mean": float(values.mean()),
+        "p95": float(np.quantile(values, 0.95)),
+        "p99": float(np.quantile(values, 0.99)),
+        "max": float(values.max()),
+    }
+
+
+def _lambda_failure_reason(trace: list[dict], evaluation_errors: list[dict], error: Exception,
+                           max_lambda: float, p99_max: float) -> tuple[str, list[str], dict]:
+    valid = [row for row in trace if row["numeric_valid"] and row["mean_KL"] is not None]
+    by_lambda = {row["lambda"]: row for row in valid}
+    ordered = [by_lambda[value] for value in sorted(by_lambda)]
+    mean_decreases, p99_decreases = [], []
+    monotonicity_tolerance = 1e-8
+    for left, right in zip(ordered, ordered[1:]):
+        if right["mean_KL"] < left["mean_KL"] - monotonicity_tolerance:
+            mean_decreases.append({"from_lambda": left["lambda"], "to_lambda": right["lambda"],
+                                   "from_mean_KL": left["mean_KL"], "to_mean_KL": right["mean_KL"]})
+        if right["p99_KL"] < left["p99_KL"] - monotonicity_tolerance:
+            p99_decreases.append({"from_lambda": left["lambda"], "to_lambda": right["lambda"],
+                                  "from_p99_KL": left["p99_KL"], "to_p99_KL": right["p99_KL"]})
+    non_monotonic = bool(mean_decreases or p99_decreases)
+    best_p99 = max((row for row in valid if row["p99_KL"] <= p99_max),
+                   key=lambda row: row["lambda"], default=None)
+    max_row = by_lambda.get(float(max_lambda))
+    message = str(error)
+    numerical_failure = bool(
+        evaluation_errors or any(not row["numeric_valid"] for row in trace)
+        or "NONFINITE_OR_INVALID_KL" in message
+        or "POSTCHECK_FAILED" in message
+    )
+    if "ZERO_STRENGTH_PARITY_FAILED" in message:
+        primary = "ZERO_STRENGTH_PARITY_FAILED"
+    elif non_monotonic or "NON_MONOTONIC_KL_CURVE" in message:
+        primary = "NON_MONOTONIC_KL_CURVE"
+    elif numerical_failure:
+        primary = "NUMERICAL_OR_EVALUATION_FAILURE"
+    elif "CONFIGURATION_INVALID" in message:
+        primary = "LAMBDA_SEARCH_CONFIGURATION_INVALID"
+    else:
+        primary = "NO_POSITIVE_FEASIBLE_LAMBDA"
+    reasons = [primary]
+    if max_row is not None and max_row["feasible"]:
+        reasons.append("MAX_LAMBDA_FEASIBLE")
+    return primary, reasons, {
+        "mean_KL_decreases": mean_decreases,
+        "p99_KL_decreases": p99_decreases,
+        "monotonicity_absolute_tolerance_nats": monotonicity_tolerance,
+        "p99_limit_crossed_in_trace": any(
+            row["p99_KL"] is not None and row["p99_KL"] > p99_max for row in trace
+        ),
+        "max_lambda_was_tested": max_row is not None,
+        "largest_tested_lambda_with_p99_within_limit": best_p99,
+        "evaluation_errors": evaluation_errors,
+    }
+
+
+def _lambda_diagnostic_report(profile: ModelProfile, trace: list[dict], evaluation_errors: list[dict],
+                              fisher_checks: dict, calibration_bank: np.ndarray, whitener: np.ndarray,
+                              context_count: int, error: Exception | None,
+                              selection: dict | None = None) -> dict:
+    target = float(profile.scientific["target_mean_kl_nats"])
+    p99_max = float(profile.scientific["safeguard_p99_kl_nats"])
+    max_lambda, iterations, monotonicity_tolerance = 2.0, 24, 1e-8
+    valid = [row for row in trace if row["numeric_valid"] and row["mean_KL"] is not None]
+    best_p99 = max((row for row in valid if row["p99_KL"] <= p99_max),
+                   key=lambda row: row["lambda"], default=None)
+    closest_mean = min(valid, key=lambda row: (abs(row["mean_KL"] - target),
+                                               not row["p99_KL_within_limit"], -row["lambda"]),
+                       default=None)
+    feasible = [row for row in valid if row["feasible"]]
+    largest_tested = max(valid, key=lambda row: row["lambda"], default=None)
+
+    fisher_eigenvalues = np.asarray(fisher_checks.get("eigenvalues", []), dtype=np.float64)
+    fisher_effective = np.asarray(fisher_checks.get("effective_eigenvalues", []), dtype=np.float64)
+    fisher = {
+        "rank": int(fisher_checks.get("rank", 0)),
+        "min_eigenvalue": float(fisher_eigenvalues.min()) if fisher_eigenvalues.size else None,
+        "max_eigenvalue": float(fisher_eigenvalues.max()) if fisher_eigenvalues.size else None,
+        "condition_number": fisher_checks.get("condition_number"),
+        "ridge": fisher_checks.get("ridge"),
+        "effective_min_eigenvalue": float(fisher_effective.min()) if fisher_effective.size else None,
+        "effective_max_eigenvalue": float(fisher_effective.max()) if fisher_effective.size else None,
+        "effective_condition_number": fisher_checks.get("effective_condition_number"),
+    }
+    directions = np.asarray([whitener @ key for key in calibration_bank], dtype=np.float64)
+    important_lambdas = {
+        "largest_tested_p99_feasible": best_p99["lambda"] if best_p99 else None,
+        "closest_to_mean_target": closest_mean["lambda"] if closest_mean else None,
+        "largest_lambda_tested": largest_tested["lambda"] if largest_tested else None,
+        "max_lambda_search_limit": max_lambda,
+        "selected_lambda": selection["selected_lambda"] if selection else None,
+    }
+    rotations = {}
+    for label, value in important_lambdas.items():
+        if value is None:
+            rotations[label] = None
+            continue
+        angles = float(value) * directions
+        rotations[label] = {
+            "lambda": float(value),
+            "Lk_norm": _lambda_distribution(np.linalg.norm(directions, axis=1)),
+            "lambda_Lk_norm": _lambda_distribution(np.linalg.norm(angles, axis=1)),
+            "max_absolute_angle": float(np.abs(angles).max()) if angles.size else None,
+        }
+
+    failure = None
+    if error is not None:
+        primary, reasons, curve = _lambda_failure_reason(
+            trace, evaluation_errors, error, max_lambda, p99_max,
+        )
+        failure = {
+            "exception_type": type(error).__name__,
+            "message": str(error),
+            "primary_cause": primary,
+            "causes": reasons,
+            "curve_diagnostics": curve,
+        }
+    measurements_per_lambda = int(len(calibration_bank) * context_count)
+    selected_metrics = selection["selected_metrics"] if selection else {}
+    report = {
+        "schema": "klrd_rs.portable.lambda_search_diagnostic.v2",
+        "status": "FAILED" if error is not None else "FEASIBLE",
+        "failure": failure,
+        "selection_protocol_version": LAMBDA_SELECTION_PROTOCOL_VERSION,
+        "selection_rule": LAMBDA_SELECTION_RULE,
+        "selected_lambda": selection["selected_lambda"] if selection else None,
+        "mean_KL": selected_metrics.get("mean_KL"),
+        "p95_KL": selected_metrics.get("p95_KL"),
+        "p99_KL": selected_metrics.get("p99_KL"),
+        "max_KL": selected_metrics.get("max_KL"),
+        "mean_KL_budget": target,
+        "p99_KL_budget": p99_max,
+        "limiting_constraint": selection["limiting_constraint"] if selection else None,
+        "max_lambda_reached": selection["max_lambda_reached"] if selection else False,
+        "configuration": {
+            "target_mean_KL": target,
+            "p99_max": p99_max,
+            "max_lambda": max_lambda,
+            "iterations": iterations,
+            "monotonicity_absolute_tolerance_nats": monotonicity_tolerance,
+            "fisher_ridge_fraction": float(profile.scientific["fisher_ridge_fraction"]),
+        },
+        "summary": {
+            "largest_tested_lambda_with_p99_within_limit": best_p99,
+            "lambda_closest_to_mean_target": closest_mean,
+            "feasible_lambda_found": max(feasible, key=lambda row: row["lambda"], default=None),
+        },
+        "fisher_diagnostics": fisher,
+        "rotation_diagnostics": rotations,
+        "calibration_statistics": {
+            "calibration_key_count": int(len(calibration_bank)),
+            "strength_context_count": int(context_count),
+            "KL_measurements_per_lambda": measurements_per_lambda,
+            "lambda_evaluations_completed": int(len(trace)),
+            "total_KL_measurements": int(sum(row["measurement_count"] for row in trace)),
+            "evaluation_errors": evaluation_errors,
+        },
+        "lambda_search_trace": trace,
+    }
+    return report
+
+
 def freeze_e1_geometry(
     profile: ModelProfile,
     output: str | Path,
@@ -123,6 +403,7 @@ def freeze_e1_geometry(
     lambda_evaluator: Callable[[float, np.ndarray, np.ndarray], np.ndarray],
     model_identity: dict,
     run_inputs: dict | None = None,
+    calibration_context_count: int | None = None,
 ) -> dict:
     """Freeze public geometry and one global lambda, then draw the owner bank."""
     profile.validate()
@@ -169,22 +450,95 @@ def freeze_e1_geometry(
         "seed": int(profile.seeds["calibration_keys"]), "keys": key_ids(calibration_bank),
         "vectors_path": "private/calibration_keys.npz",
     })
-    strength, trace = choose_lambda(
-        lambda value: lambda_evaluator(value, calibration_bank, whitener),
-        target=float(profile.scientific["target_mean_kl_nats"]),
-        p99_max=float(profile.scientific["safeguard_p99_kl_nats"]),
+    target_mean = float(profile.scientific["target_mean_kl_nats"])
+    p99_max = float(profile.scientific["safeguard_p99_kl_nats"])
+    max_lambda, iterations = 2.0, 24
+    lambda_trace: list[dict] = []
+    lambda_evaluation_errors: list[dict] = []
+
+    def tracked_lambda_evaluator(value: float, key_bank: np.ndarray, L: np.ndarray) -> np.ndarray:
+        try:
+            measurements = np.asarray(lambda_evaluator(value, key_bank, L), dtype=np.float64)
+        except Exception as exc:
+            lambda_evaluation_errors.append({
+                "lambda": float(value), "exception_type": type(exc).__name__, "message": str(exc),
+            })
+            raise
+        return measurements
+
+    try:
+        selection = choose_lambda_budget_constrained(
+            lambda value: tracked_lambda_evaluator(value, calibration_bank, whitener),
+            target=target_mean, p99_max=p99_max, max_lambda=max_lambda,
+            iterations=iterations, trace=lambda_trace,
+        )
+        strength = selection["selected_lambda"]
+        selected_metrics = selection["selected_metrics"]
+        if not (selected_metrics["mean_KL"] <= target_mean
+                and selected_metrics["p99_KL"] <= p99_max and selected_metrics["feasible"]):
+            raise ValueError("LAMBDA_SELECTION_BUDGET_POSTCHECK_FAILED")
+    except Exception as exc:
+        measured_context_count = calibration_context_count
+        if measured_context_count is None and lambda_trace and len(calibration_bank):
+            measured_context_count = lambda_trace[0]["measurement_count"] // len(calibration_bank)
+        diagnostic = _lambda_diagnostic_report(
+            profile, lambda_trace, lambda_evaluation_errors, fisher_checks,
+            calibration_bank, whitener, int(measured_context_count or 0), exc,
+        )
+        write_json(teacher_dir / "lambda_search_diagnostic.json", diagnostic)
+        best_p99 = max(
+            (row for row in lambda_trace if row["feasible"]),
+            key=lambda row: row["lambda"], default=None,
+        )
+        closest = diagnostic["summary"]["lambda_closest_to_mean_target"]
+        print(
+            "[E1 lambda search] FAILED: "
+            f"{diagnostic['failure']['primary_cause']}; "
+            f"largest tested budget-feasible lambda={best_p99['lambda'] if best_p99 else None}, "
+            f"mean_KL={best_p99['mean_KL'] if best_p99 else None}, "
+            f"p99_KL={best_p99['p99_KL'] if best_p99 else None}; "
+            f"closest-to-target lambda={closest['lambda'] if closest else None}, "
+            f"mean_KL={closest['mean_KL'] if closest else None}, "
+            f"p99_KL={closest['p99_KL'] if closest else None}. "
+            f"Full diagnostics: {teacher_dir / 'lambda_search_diagnostic.json'}"
+        )
+        raise
+
+    measured_context_count = calibration_context_count
+    if measured_context_count is None and lambda_trace and len(calibration_bank):
+        measured_context_count = lambda_trace[0]["measurement_count"] // len(calibration_bank)
+    diagnostic = _lambda_diagnostic_report(
+        profile, lambda_trace, lambda_evaluation_errors, fisher_checks,
+        calibration_bank, whitener, int(measured_context_count or 0), None,
+        selection=selection,
     )
+    legacy_trace = [
+        {"lambda": row["lambda"], "mean": row["mean_KL"], "p99": row["p99_KL"]}
+        for row in lambda_trace
+    ]
+    diagnostic["legacy_choose_lambda_trace"] = legacy_trace
+    write_json(teacher_dir / "lambda_search_diagnostic.json", diagnostic)
     strength_record = {
         "schema": "klrd_rs.portable.global_lambda.v1",
         "status": "FROZEN",
         "lambda": float(strength),
-        "pooled_search_trace": trace,
+        "pooled_search_trace": legacy_trace,
         "calibration_keys": int(profile.scientific["calibration_keys"]),
         "global_only": True,
         "owner_keys_sampled_after_freeze": True,
         "KL_direction": "KL(q||p0)",
         "mean_target": float(profile.scientific["target_mean_kl_nats"]),
         "p99_max": float(profile.scientific["safeguard_p99_kl_nats"]),
+        "selected_lambda": float(strength),
+        "mean_KL": selected_metrics["mean_KL"],
+        "p95_KL": selected_metrics["p95_KL"],
+        "p99_KL": selected_metrics["p99_KL"],
+        "max_KL": selected_metrics["max_KL"],
+        "mean_KL_budget": target_mean,
+        "p99_KL_budget": p99_max,
+        "limiting_constraint": selection["limiting_constraint"],
+        "selection_rule": LAMBDA_SELECTION_RULE,
+        "selection_protocol_version": LAMBDA_SELECTION_PROTOCOL_VERSION,
     }
     write_json(teacher_dir / "global_lambda.json", strength_record)
 
@@ -211,6 +565,7 @@ def freeze_e1_geometry(
         "fisher": "geometry/fisher.npz",
         "whitening": "geometry/whitening.npz",
         "global_lambda": "teacher/global_lambda.json",
+        "lambda_search_diagnostic": "teacher/lambda_search_diagnostic.json",
         "calibration_keys": "private/calibration_keys.npz",
         "calibration_key_ids": "keys/calibration_key_ids.json",
         "owner_keys": "private/owner_keys.npz",
@@ -225,6 +580,18 @@ def freeze_e1_geometry(
         "tokenizer_revision": model_identity.get("tokenizer_revision"),
         "model_identity_sha256": model_identity.get("identity_sha256"),
         "lambda": float(strength),
+        "lambda_selection": {
+            "selected_lambda": float(strength),
+            "mean_KL": selected_metrics["mean_KL"],
+            "p95_KL": selected_metrics["p95_KL"],
+            "p99_KL": selected_metrics["p99_KL"],
+            "max_KL": selected_metrics["max_KL"],
+            "mean_KL_budget": target_mean,
+            "p99_KL_budget": p99_max,
+            "limiting_constraint": selection["limiting_constraint"],
+            "selection_rule": LAMBDA_SELECTION_RULE,
+            "selection_protocol_version": LAMBDA_SELECTION_PROTOCOL_VERSION,
+        },
         "shapes": {"hidden_size": int(basis.shape[0]), "pca_dim": int(basis.shape[1]), "m": m,
                     "owner_keys": int(len(owner_bank))},
         "owner_key_rule": profile.scientific["owner_key_rule"],
@@ -414,7 +781,7 @@ def run_e1(profile: ModelProfile, output: str | Path, mode: str) -> dict:
     if existing_frozen is None:
         result = freeze_e1_geometry(
             profile, root, basis, mean, np.asarray(fisher_scores), evaluate_strength, identity,
-            run_inputs=run_inputs,
+            run_inputs=run_inputs, calibration_context_count=len(strength_contexts),
         )
     else:
         result = {

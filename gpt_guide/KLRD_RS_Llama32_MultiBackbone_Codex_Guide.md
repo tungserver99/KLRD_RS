@@ -376,14 +376,17 @@ Llama 3.2 Instruct có chat template/tokens đặc thù, e.g. end-of-message và
 ### 5.4. E2 evaluation design — tương đương Qwen, không tinh chỉnh theo outcome
 
 - Fresh E2 cohort target: **5,000 distinct eligible prompts**, lấy từ pinned UltraChat source với manifest/exclusion policy; tách khỏi E1 geometry/calibration, E1 diagnostic và mọi training/test exposures. Ưu tiên `test_gen`, fallback `train_gen` khi đúng source policy, báo provenance thật; đừng làm sạch bằng cách xóa những prompt khó.
-- Giữ **8 owner keys** (`indices 0..7` của Llama 64-key bank) nếu thực hiện full E2; primary focus owner key0 như predeclared. Wrong keys 20/owner được định trước bằng deterministic cycling, không chọn theo outcome.
+- **Execution scope hiện được chốt cho Llama là pilot group0:** tạo/freeze cohort 5,000 prompt và năm group Q=1000 theo seed đã định trước, nhưng chỉ sinh group index0 (1,000 prompt) cho mỗi condition. Chạy đủ 8 owner keys (`indices 0..7`) và clean: 8,000 owner responses + 1,000 clean = **9,000 primary responses**. Không chạy stress keys.
+- Group0 có đúng **một nhóm Q=1000 và mười nhóm Q=100**, các nhóm Q=100 nằm trong Q=1000 và không được tính là 10 trial độc lập ngoài nhóm cha. Full design vẫn là 5,000 prompt/condition; pilot report phải ghi `PILOT_ONLY`, `complete=false`, không trình bày như full E2.
 - Chạy ordinary clean và exact teacher trên **cùng prompts**, `max_new_tokens=512`, matched sampling settings, fixed seeds, ordinary EOS, no truncation/response regeneration.
 - Group at `Q=100` và `Q=1000`; dùng **disjoint prompt groups** trong từng condition. `Q=20/50` có thể là secondary/nested nhưng không nhầm các nhóm nested là independent.
 - Report TPR owner, clean FPR per key, wrong-key false detection, vector norm, cosine, p-values, valid token counts, response length, EOS/truncation/roundtrip, optional utility and visited-prefix KL. Keep alpha nominal 0.01 and conservative 1e-4 exactly.
 - Đánh giá fixed-key FPR theo đúng independent groups; không tuyên bố 1% FPR được chứng minh chặt từ 5 nhóm Q1000/key hoặc bằng pooling key-dependent scores.
 - Không calibrate threshold từ clean outputs. Không cherry-pick owner/key, không đổi `lambda`, `m`, query budget, cohort, alpha sau khi xem TPR.
 
-**Chế độ pilot:** cung cấp `--mode smoke`/`--mode pilot` (do người dùng chạy) để sinh rất ít data và xác nhận correctness, **không làm thay đổi/freeze lại** owner key hay cohort dựa trên kết quả. Nếu pilot dùng một phần của target full cohort, lưu manifest và khóa thứ tự để full resume đúng; nếu pilot correctness dùng independent prompts, đánh dấu `diagnostic_only`, không đưa vào primary.
+**Smoke và pilot:** launcher `bash run_llama_e1_e2.sh` chạy E1, E2 smoke diagnostic, rồi pilot group0 và report; không tự mở rộng sang bốn group còn lại. Smoke được đánh dấu diagnostic-only, không tính vào 9,000 primary responses. Pilot dùng group0 đã freeze trong cohort 5,000; không chọn lại prompt/key theo kết quả. Mọi lần mở rộng từ pilot sang full E2 cần quyết định riêng và output identity riêng.
+
+Pilot report được lưu riêng tại `runs/llama32_3b/e2/<run_id>/pilot/report/summary.json`, mang `status=PILOT_ONLY` và `complete=false`; điều này có nghĩa pilot đã chạy xong, còn full study chưa hoàn thành. Resume dùng các generation/scoring batch đã commit trong cùng pilot output. Khi chuyển scope từ full đang chạy sang pilot, dừng tiến trình full trước; scope/profile identity mới sẽ tạo E2 run directory mới, không trộn hay xóa artifacts full cũ. Trong lúc pilot chạy, launcher in tổng batch/response đã xong và còn lại, cùng ETA cập nhật mỗi 30 giây.
 
 ---
 

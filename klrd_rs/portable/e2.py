@@ -23,6 +23,11 @@ from .auth import get_hf_token
 from .vllm_adapter import engine_options, register_profile_architecture, runtime_identity
 
 
+E2_RUN_SCOPE = "pilot_group0"
+E2_PILOT_GROUP_INDEX = 0
+E2_PILOT_PROMPT_COUNT = 1000
+
+
 def encode_visible_response(tokenizer: Any, prompt: str, response: str) -> dict[str, list[int]]:
     """Canonical text-only causal encoding; special/EOS targets are excluded."""
     return encode_response(tokenizer, prompt, response)
@@ -296,7 +301,10 @@ def _native_eos_ids(identity: dict) -> list[int]:
 
 def _engine_tokenizer_check(engine_tokenizer: Any, identity: dict) -> None:
     vocab = engine_tokenizer.get_vocab()
-    canonical = json.dumps({str(token): int(index) for token, index in vocab.items()}, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    canonical = json.dumps(
+        {str(token): int(index) for token, index in vocab.items()},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    )
     if hashlib.sha256(canonical.encode()).hexdigest() != identity["vocab_sha256"]:
         raise ValueError("VLLM_TOKENIZER_VOCAB_MISMATCH")
     template = getattr(engine_tokenizer, "chat_template", None)
@@ -391,7 +399,7 @@ def _run_generation_condition(engine: Any, profile: ModelProfile, frozen: Frozen
                 raise RuntimeError("E2_VLLM_PROMPT_OR_OUTPUT_ORDER_MISMATCH")
             completion = item.outputs[0]
             token_ids = [int(token) for token in completion.token_ids]
-            if item.stop_reason in eos_ids and (not token_ids or token_ids[-1] != item.stop_reason):
+            if completion.stop_reason in eos_ids and (not token_ids or token_ids[-1] != completion.stop_reason):
                 raise RuntimeError("VLLM_NATIVE_STOP_TOKEN_MISSING: refusing to fabricate sampled EOS IDs")
             text = tokenizer.decode(token_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
             visible = [token for token in token_ids if token not in set(tokenizer.all_special_ids)]
@@ -512,17 +520,18 @@ def _aggregate_groups(rows: list[dict], vectors: np.ndarray, groups: list[dict],
 
 
 def run_e2(profile: ModelProfile, e1_path: str | Path, output: str | Path, mode: str) -> dict:
-    """Run explicit smoke/full E2 or read a completed report after verifying frozen E1."""
+    """Run smoke or the declared group0 pilot, or read its report."""
     profile.validate()
-    if mode not in ("smoke", "run", "report"):
-        raise ValueError("E2 mode must be smoke, run, or report")
+    if mode not in ("smoke", "pilot", "run", "report"):
+        raise ValueError("E2 mode must be smoke, pilot, or report")
+    is_smoke = mode == "smoke"
     frozen = load_frozen_e1(e1_path, profile)
     root = Path(__file__).resolve().parents[2]
     output_path = profile.validate_run_path(root, "e2", Path(output))
     if Path(e1_path).resolve() == output_path.resolve():
         raise ValueError("E2_OUTPUT_MUST_BE_ISOLATED_FROM_E1")
     if mode == "report":
-        summary_path = output_path / "full" / "report" / "summary.json"
+        summary_path = output_path / "pilot" / "report" / "summary.json"
         if not summary_path.is_file():
             raise FileNotFoundError(f"MISSING_E2_REPORT: {summary_path}")
         summary = read_json(summary_path)
@@ -530,17 +539,19 @@ def run_e2(profile: ModelProfile, e1_path: str | Path, output: str | Path, mode:
             raise ValueError("E2_REPORT_FROZEN_E1_IDENTITY_MISMATCH")
         return summary
 
-    phase = "smoke" if mode == "smoke" else "primary"
-    phase_root = output_path / "smoke" if mode == "smoke" else output_path / "full"
+    phase = "smoke" if is_smoke else "primary"
+    phase_root = output_path / "smoke" if is_smoke else output_path / "pilot"
     settings_path = phase_root / "provenance" / "identity.json"
     settings = {
         "profile_id": profile.profile_id,
         "frozen_e1_sha256": digest(frozen.receipt),
         "model_revision": frozen.model_identity["model_revision"],
         "dataset_revision": profile.data["dataset_revision"],
-        "mode": mode,
-        "prompt_count": int(profile.scientific["e2_prompt_count"]),
-        "owner_indices": [0] if mode == "smoke" else list(profile.scientific["e2_owner_indices"]),
+        "mode": "smoke" if is_smoke else "pilot",
+        "cohort_prompt_count": int(profile.scientific["e2_prompt_count"]),
+        "run_scope": "smoke_diagnostic" if is_smoke else E2_RUN_SCOPE,
+        "run_prompt_count": 8 if is_smoke else E2_PILOT_PROMPT_COUNT,
+        "owner_indices": [0] if is_smoke else list(profile.scientific["e2_owner_indices"]),
         "max_new_tokens": int(profile.scientific["sampling_max_new_tokens"]),
         "temperature": float(profile.scientific["tau"]),
         "top_p": float(profile.scientific["sampling_top_p"]),
@@ -568,10 +579,30 @@ def run_e2(profile: ModelProfile, e1_path: str | Path, output: str | Path, mode:
         profile, e1_root, frozen, phase_root, backbone.tokenizer,
         int(profile.scientific["e2_prompt_count"]), root,
     )
-    count = min(8, len(rows)) if mode == "smoke" else len(rows)
-    run_rows = rows[:count]
-    if mode == "smoke":
+    if is_smoke:
+        count = min(8, len(rows))
+        run_rows = rows[:count]
         groups = []
+    else:
+        pilot_group_index = E2_PILOT_GROUP_INDEX
+        q1000_groups = [group for group in groups
+                        if group.get("Q") == 1000 and group.get("group_index") == pilot_group_index]
+        if len(q1000_groups) != 1:
+            raise ValueError("E2_PILOT_GROUP0_MISSING_OR_AMBIGUOUS")
+        pilot_prompt_ids = q1000_groups[0]["prompt_ids"]
+        wanted = E2_PILOT_PROMPT_COUNT
+        if len(pilot_prompt_ids) != wanted or len(set(pilot_prompt_ids)) != wanted:
+            raise ValueError("E2_PILOT_GROUP0_PROMPT_COUNT_INVALID")
+        rows_by_id = {row["prompt_id"]: row for row in rows}
+        if any(prompt_id not in rows_by_id for prompt_id in pilot_prompt_ids):
+            raise ValueError("E2_PILOT_GROUP0_PROMPT_MISSING_FROM_COHORT")
+        run_rows = [rows_by_id[prompt_id] for prompt_id in pilot_prompt_ids]
+        groups = [group for group in groups if group.get("group_index") == pilot_group_index]
+        if sum(group.get("Q") == 100 for group in groups) != 10:
+            raise ValueError("E2_PILOT_GROUP0_Q100_GROUP_COUNT_INVALID")
+        count = len(run_rows)
+        if count != wanted:
+            raise ValueError("E2_PILOT_GROUP0_RUN_COUNT_INVALID")
     prompt_lengths = [len(prompt_ids(backbone.tokenizer, row["prompt"])) for row in run_rows]
     max_model_len = max(prompt_lengths) + int(profile.scientific["sampling_max_new_tokens"])
     context_limit = int(frozen.model_identity["shapes"]["max_position_embeddings"])
@@ -593,14 +624,14 @@ def run_e2(profile: ModelProfile, e1_path: str | Path, output: str | Path, mode:
             "model_revision": frozen.model_identity["model_revision"],
             "max_model_len": max_model_len,
             "generation_seed": int(profile.seeds["e2_generation"]),
-        }, eager=(mode == "smoke"))
+        }, eager=is_smoke)
         engine = LLM(**options)
         engine_tokenizer = engine.get_tokenizer()
         _engine_tokenizer_check(engine_tokenizer, frozen.model_identity)
         runtime["effective_max_model_len"] = max_model_len
         write_json(phase_root / "provenance" / "runtime_identity.json", runtime)
         condition_results = {}
-        owners = [0] if mode == "smoke" else list(profile.scientific["e2_owner_indices"])
+        owners = [0] if is_smoke else list(profile.scientific["e2_owner_indices"])
         for owner in ["clean", *owners]:
             key_index = None if owner == "clean" else int(owner)
             generated = _run_generation_condition(engine, profile, frozen, run_rows, phase_root,
@@ -639,7 +670,7 @@ def run_e2(profile: ModelProfile, e1_path: str | Path, output: str | Path, mode:
                 "condition_score_sha256": sha256(condition_cache),
             }
             del generated
-        if mode == "smoke":
+        if is_smoke:
             summary = {
                 "status": "SMOKE_COMPLETED_DIAGNOSTIC_ONLY",
                 "profile_id": profile.profile_id,
@@ -655,10 +686,24 @@ def run_e2(profile: ModelProfile, e1_path: str | Path, output: str | Path, mode:
             for owner, condition in condition_results.items():
                 results[owner] = _aggregate_groups(run_rows, condition["vectors"], groups, frozen, profile, owner)
             report = {
-                "status": "COMPLETED_WITHOUT_AUTOMATIC_SUCCESS_CLAIM",
+                "status": "PILOT_ONLY",
+                "complete": False,
+                "run_scope": "predeclared_group0_pilot",
                 "profile_id": profile.profile_id,
                 "frozen_e1_sha256": digest(frozen.receipt),
                 "cohort_count": len(rows),
+                "evaluated_group_indices": [E2_PILOT_GROUP_INDEX],
+                "pilot_prompts_per_condition": len(run_rows),
+                "pilot_owner_responses": len(run_rows) * len(owners),
+                "pilot_clean_responses": len(run_rows),
+                "pilot_total_primary_responses": len(run_rows) * (len(owners) + 1),
+                "full_primary_response_target": int(profile.scientific["e2_prompt_count"]) * (len(owners) + 1),
+                "stress_key_responses": 0,
+                "group_counts_by_budget": {
+                    str(budget): sum(group.get("Q") == budget for group in groups)
+                    for budget in profile.scientific["primary_query_budgets"]
+                },
+                "q100_groups_nested_in_q1000": True,
                 "owner_indices": owners,
                 "wrong_key_indices": {str(owner): wrong_key_indices(profile, owner) for owner in owners},
                 "alpha_levels": list(profile.scientific["alphas"]),
@@ -676,7 +721,7 @@ def run_e2(profile: ModelProfile, e1_path: str | Path, output: str | Path, mode:
                 "clean_control": "ordinary native Llama generation on same prompts and seeds",
                 "primary_verifier": "visible response text re-encoded by clean pinned HF tokenizer; special/EOS targets excluded",
                 "server_parity": "NOT_RUN_UNLESS_SEPARATE_ACCEPTANCE_EVIDENCE_EXISTS",
-                "scientific_scope": "measured E2 outputs only; fixed-key FPR uncertainty must be stated from independent groups",
+                "scientific_scope": "group0 pilot only; incomplete for full E2 and not a full-study claim",
             }
             write_json(phase_root / "report" / "summary.json", report)
             summary = report
